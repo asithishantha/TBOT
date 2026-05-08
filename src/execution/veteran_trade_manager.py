@@ -443,6 +443,14 @@ class VeteranTradeManager:
         else:
             return self.current_stop_loss <= self.entry_price
 
+    @property
+    def current_take_profit(self) -> Optional[float]:
+        """Returns the next active take profit target"""
+        idx = len(self.partials_hit)
+        if idx < len(self.take_profit_levels):
+            return self.take_profit_levels[idx]
+        return None
+
     def _calc_pct_distance(self, price1: float, price2: float) -> float:
         return abs(price1 - price2) / price1 * 100
 

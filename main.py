@@ -3493,20 +3493,46 @@ class TradingBot:
             # 3. Check HOLD Signal
             # ============================================================
             if signal == 0:
-                # Distinguish AI rejection (original signal was directional but
-                # got blocked inside the aggregator) from a natural HOLD.
+                # Distinguish aggregator/AI rejection from a natural HOLD
                 original_sig = details.get("original_signal", 0)
-                if original_sig != 0 and details.get("action") == "rejected":
-                    logger.info(f"[HOLD] {asset_name}: Signal REJECTED by AI validation (original={original_sig})")
+                reasoning = details.get("reasoning", "")
+                ai_details = details.get("ai_validation", {})
+                
+                # If we had an original signal that was zeroed out, or if reasoning indicates a block
+                is_blocked = (original_sig != 0) or (reasoning and "hold" not in reasoning.lower())
+                
+                if is_blocked:
+                    # Determine block source and reason
+                    block_source = "Signal Aggregator"
+                    
+                    # If it was specifically an AI validation rejection
+                    if ai_details.get("action") == "rejected" and ai_details.get("rejection_reasons"):
+                        block_source = "AI Validation"
+                        block_reason = ", ".join(ai_details.get("rejection_reasons"))
+                    else:
+                        # General aggregator block (volatility, governor, etc)
+                        # Clean up technical reasoning strings for humans
+                        raw_reason = reasoning or "Signal blocked by aggregator filters"
+                        block_reason = raw_reason.replace("_", " ").title()
+                        
+                        # Special handling for common technical reasons
+                        if "low_volatility" in raw_reason:
+                            block_reason = "Market volatility below minimum threshold"
+                        elif "no_sniper_confirmation" in raw_reason:
+                            block_reason = "No institutional sniper confirmation"
+                        elif "blocked_by_governor" in raw_reason:
+                            block_reason = "Blocked by Macro Governor (Daily Trend)"
+                        elif "blocked_by_trap_filter" in raw_reason:
+                            block_reason = "Candle structure indicates a potential trap"
+                        elif "insufficient_trend_strength" in raw_reason:
+                            block_reason = "ADX indicates insufficient trend strength"
+
+                    logger.info(f"[HOLD] {asset_name}: Signal BLOCKED by {block_source} ({block_reason})")
                     self._notify_blocked(
                         asset=asset_name,
-                        signal=original_sig,
-                        block_source="AI Validation",
-                        block_reason=(
-                            ", ".join(details.get("rejection_reasons") or [])
-                            or details.get("ai_rejection_reason", "Signal did not pass AI gate")
-                            or "Signal did not pass AI gate"
-                        ),
+                        signal=original_sig or 1, # fallback if original_sig is missing
+                        block_source=block_source,
+                        block_reason=block_reason,
                         details=details,
                         price=details.get("price"),
                     )

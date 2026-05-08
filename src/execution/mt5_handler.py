@@ -209,8 +209,9 @@ class MT5ExecutionHandler:
             "max_positions_per_asset", 3
         )
 
-        # VTM-SL: tracks last SL pushed per ticket to suppress redundant SLTP orders
+        # VTM-SL/TP: tracks last pushed values per ticket to suppress redundant SLTP orders
         self._last_pushed_sl: Dict[int, float] = {}
+        self._last_pushed_tp: Dict[int, float] = {}
 
         logger.info("MT5ExecutionHandler with Multi-Asset support initialized")
 
@@ -809,14 +810,15 @@ class MT5ExecutionHandler:
                     f"VTM Active:     {'Yes' if ohlc_data else 'No'}\n"
                     f"{'='*80}"
                 )
-                # ── VTM-SL: push initial stop loss to exchange ───────────────────
+                # ── VTM-SL/TP: push initial stop loss / take profit to exchange ───
                 _asset_cfg_exchange = self.config.get("assets", {}).get(
                     asset, {}
                 ).get("exchange", "mt5")
-                if (
-                    _asset_cfg_exchange == "mt5"              # never fires for BTC/Binance
-                    and self.trading_config.get("place_vtm_sl_on_exchange", False)
-):
+                
+                _push_sl = self.trading_config.get("place_vtm_sl_on_exchange", False)
+                _push_tp = self.trading_config.get("place_vtm_tp_on_exchange", False)
+
+                if _asset_cfg_exchange == "mt5" and (_push_sl or _push_tp):
                     try:
                         _new_pos = next(
                             (p for p in self.portfolio_manager.positions.values()
@@ -824,13 +826,18 @@ class MT5ExecutionHandler:
                              and getattr(p, "trade_manager", None) is not None),
                             None
                         )
-                        _initial_sl = (
-                            _new_pos.trade_manager.current_stop_loss if _new_pos else None
-                        )
-                        if _initial_sl:
-                            self._push_sl_to_exchange(mt5_ticket, symbol, _initial_sl)
+                        if _new_pos:
+                            if _push_sl:
+                                _initial_sl = _new_pos.trade_manager.current_stop_loss
+                                if _initial_sl:
+                                    self._push_sl_to_exchange(mt5_ticket, symbol, _initial_sl)
+                            
+                            if _push_tp:
+                                _initial_tp = _new_pos.trade_manager.current_take_profit
+                                if _initial_tp:
+                                    self._push_tp_to_exchange(mt5_ticket, symbol, _initial_tp)
                     except Exception as _e:
-                        logger.warning(f"[VTM-SL] Initial SL push failed: {_e}")
+                        logger.warning(f"[VTM-EXCHANGE] Initial SL/TP push failed: {_e}")
                 # ─────────────────────────────────────────────────────────────────
                 return True
             else:
@@ -853,6 +860,61 @@ class MT5ExecutionHandler:
     # VTM-SL: push VTM-calculated stop loss onto the exchange
     # Only active when  trading.place_vtm_sl_on_exchange = true  in config.json
     # ─────────────────────────────────────────────────────────────────────────
+    def _push_tp_to_exchange(self, ticket: int, symbol: str, new_tp: float) -> bool:
+        """
+        Modify the take-profit of an open MT5 position using TRADE_ACTION_SLTP.
+        - Preserves the existing exchange SL.
+        - Skips if TP has not meaningfully changed since the last push.
+        - Always a no-op in paper mode.
+        """
+        if self.mode.lower() == "paper":
+            return False
+        try:
+            # Guard: ignore micro-movements
+            last = self._last_pushed_tp.get(ticket)
+            if last is not None and abs(last - new_tp) < 0.00001:
+                return False
+
+            # Fetch live position to preserve its current SL
+            live_positions = mt5.positions_get(ticket=ticket)
+            if not live_positions:
+                logger.warning(f"[VTM-TP] Ticket #{ticket} not found on exchange")
+                return False
+            existing_sl = live_positions[0].sl  # 0.0 if no SL set on exchange
+
+            # Round to symbol precision
+            sym_info = mt5.symbol_info(symbol)
+            digits = sym_info.digits if sym_info else 5
+            rounded_tp = round(new_tp, digits)
+
+            request = {
+                "action":   mt5.TRADE_ACTION_SLTP,
+                "symbol":   symbol,
+                "sl":       existing_sl,
+                "tp":       rounded_tp,
+                "position": ticket,
+            }
+
+            result = mt5.order_send(request)
+            if result and result.retcode == mt5.TRADE_RETCODE_DONE:
+                self._last_pushed_tp[ticket] = new_tp
+                prev_str = f" (was {last:,.{digits}f})" if last is not None else " (initial)"
+                logger.info(
+                    f"[VTM-TP] ✅ #{ticket} {symbol}  TP → {rounded_tp:,.{digits}f}{prev_str}"
+                )
+                return True
+            else:
+                retcode = result.retcode if result else "N/A"
+                comment = result.comment if result else "no result"
+                logger.warning(
+                    f"[VTM-TP] ⚠️ #{ticket} {symbol}  TP modify FAILED  "
+                    f"retcode={retcode} — {comment}"
+                )
+                return False
+        except Exception as e:
+            logger.error(f"[VTM-TP] CRITICAL ERROR during TP push: {e}")
+            return False
+
     def _push_sl_to_exchange(self, ticket: int, symbol: str, new_sl: float) -> bool:
         """
         Modify the stop-loss of an open MT5 position using TRADE_ACTION_SLTP.
@@ -1816,14 +1878,18 @@ class MT5ExecutionHandler:
                         logger.debug(f"Failed to update MT5 profit for {position.position_id}: {e}")
 
                 if position.trade_manager:
-                    # VTM-SL: snapshot SL before update to detect movement
+                    # VTM-SL/TP: snapshot values before update to detect movement
                     _sl_before = position.trade_manager.current_stop_loss
+                    _tp_before = position.trade_manager.current_take_profit
+                    
                     exit_signal = position.trade_manager.update_with_current_price(
                         current_price, df_4h=df_4h
                     )
+                    
                     _sl_after = position.trade_manager.current_stop_loss
+                    _tp_after = position.trade_manager.current_take_profit
 
-                    # Push SL to exchange whenever VTM moves it (trailing, breakeven, etc.)
+                    # Push SL/TP to exchange whenever VTM moves it (trailing, scaling, etc.)
                     _is_closing = (
                         exit_signal is not None
                         and not (isinstance(exit_signal, dict) and "action" in exit_signal)
@@ -1831,21 +1897,22 @@ class MT5ExecutionHandler:
                     _asset_exchange = self.config.get("assets", {}).get(
                         asset_name, {}
                     ).get("exchange", "mt5")
-                    if (
-                        not _is_closing
-                        and _sl_after is not None
-                        and _sl_before != _sl_after
-                        and position.mt5_ticket
-                        and _asset_exchange == "mt5"          # never fires for BTC/Binance
-                        and self.trading_config.get("place_vtm_sl_on_exchange", False)
-                    ):
+                    
+                    if not _is_closing and position.mt5_ticket and _asset_exchange == "mt5":
                         _sym = self.config.get("assets", {}).get(
                             asset_name, {}
                         ).get("symbol", "")
+                        
                         if _sym:
-                            self._push_sl_to_exchange(
-                                position.mt5_ticket, _sym, _sl_after
-                            )
+                            # Push SL if moved
+                            if (self.trading_config.get("place_vtm_sl_on_exchange", False)
+                                and _sl_after is not None and _sl_before != _sl_after):
+                                self._push_sl_to_exchange(position.mt5_ticket, _sym, _sl_after)
+                                
+                            # Push TP if moved
+                            if (self.trading_config.get("place_vtm_tp_on_exchange", False)
+                                and _tp_after is not None and _tp_before != _tp_after):
+                                self._push_tp_to_exchange(position.mt5_ticket, _sym, _tp_after)
 
                     if exit_signal:
                         # ✅ Check if it's an action (like pyramid) or an exit (reason)

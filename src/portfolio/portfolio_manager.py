@@ -1556,6 +1556,13 @@ class PortfolioManager:
         """
         # Get limits
         max_exposure_pct = self.portfolio_config["max_portfolio_exposure"]
+        
+        # ✅ SMALL ACCOUNT PROTOCOL: Increase allowed exposure for very small accounts
+        # to prevent single positions from locking out the entire bot.
+        if self.current_capital < 200:
+            # Allow up to 10x leverage equivalent for small accounts
+            max_exposure_pct = max(max_exposure_pct, 10.0)
+            
         max_exposure_usd = self.current_capital * max_exposure_pct
         
         # ✅ FIXED: Calculate current MARGIN exposure (not notional)

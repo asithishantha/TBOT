@@ -385,7 +385,19 @@ Adds Governor + Volatility + Sniper checks to existing aggregator
                 except Exception:
                     pass
             self._regime_durations = saved.get("regime_durations", {})
-            self._transition_counts = saved.get("transition_counts", {})
+            
+            # Restore transition counts (convert string keys back to tuples)
+            saved_tc = saved.get("transition_counts", {})
+            self._transition_counts = {}
+            for asset, counts in saved_tc.items():
+                self._transition_counts[asset] = {}
+                if isinstance(counts, dict):
+                    for k_str, v in counts.items():
+                        if "|" in k_str:
+                            parts = k_str.split("|")
+                            self._transition_counts[asset][tuple(parts)] = v
+                        else:
+                            self._transition_counts[asset][k_str] = v
 
             # Restore sweep levels
             self._pdh = saved.get("pdh", {})
@@ -433,7 +445,10 @@ Adds Governor + Volatility + Sniper checks to existing aggregator
                     for k, v in getattr(self, '_regime_start_time', {}).items()
                 },
                 "regime_durations": getattr(self, '_regime_durations', {}),
-                "transition_counts": getattr(self, '_transition_counts', {}),
+                "transition_counts": {
+                    asset: {f"{k[0]}|{k[1]}": v for k, v in counts.items()}
+                    for asset, counts in getattr(self, '_transition_counts', {}).items()
+                },
                 "pdh": getattr(self, '_pdh', {}),
                 "pdl": getattr(self, '_pdl', {}),
                 "asian_high": getattr(self, '_asian_high', {}),
@@ -1011,31 +1026,55 @@ Adds Governor + Volatility + Sniper checks to existing aggregator
 
         # ─── STEP 1: INSTITUTIONAL PATTERN RECOGNITION ───────────────────
 
+        # Diagnostic logging for pattern conditions
+        _p_log = f"[PATTERN CHECK] {self.asset_type}: phase={state.lifecycle_phase}"
+        
         # PATTERN A: Institutional Distribution
-        if (state.lifecycle_phase in ("ESTABLISHED", "FADING") and
-            state.regime_age_ratio > 1.3 and
-            (state.choch_detected or state.structural_decay) and
-            (state.absorption_detected or state.conviction_dying) and
-            state.distance_zscore > 1.5):
+        dist_conds = {
+            "phase": state.lifecycle_phase in ("ESTABLISHED", "FADING"),
+            "age": state.regime_age_ratio > 1.3,
+            "struct": (state.choch_detected or state.structural_decay),
+            "flow": (state.absorption_detected or state.conviction_dying),
+            "dist": state.distance_zscore > 1.5
+        }
+        
+        # PATTERN B: Institutional Accumulation
+        acc_conds = {
+            "phase": state.lifecycle_phase in ("PICKUP", "CONFIRMATION"),
+            "age": state.regime_age_ratio < 0.8,
+            "bos": state.bos_detected,
+            "slopes": state.slopes_aligned,
+            "no_abs": not state.absorption_detected
+        }
+
+        # PATTERN C: Liquidity Hunt
+        liq_conds = {
+            "sweep": state.sweep_detected,
+            "reject": state.rejection_at_level,
+            "effort": state.effort_result_zscore > 2.0,
+            "bar": (state.outside_bar or state.failed_breakout)
+        }
+
+        if any(dist_conds.values()) or any(acc_conds.values()) or any(liq_conds.values()):
+            _p_log += " | DIST: " + " ".join([f"{k}={'✅' if v else '❌'}" for k, v in dist_conds.items()])
+            _p_log += " | ACC: " + " ".join([f"{k}={'✅' if v else '❌'}" for k, v in acc_conds.items()])
+            _p_log += " | LIQ: " + " ".join([f"{k}={'✅' if v else '❌'}" for k, v in liq_conds.items()])
+            logger.info(_p_log)
+
+        # PATTERN A: Institutional Distribution
+        if all(dist_conds.values()):
             tf_conf *= 0.45
             mr_conf *= 1.25
             state.institutional_pattern = "DISTRIBUTION"
 
         # PATTERN B: Institutional Accumulation
-        elif (state.lifecycle_phase in ("PICKUP", "CONFIRMATION") and
-              state.regime_age_ratio < 0.8 and
-              state.bos_detected and
-              state.slopes_aligned and
-              not state.absorption_detected):
+        elif all(acc_conds.values()):
             tf_conf *= 1.30
             mr_conf *= 0.65
             state.institutional_pattern = "ACCUMULATION"
 
         # PATTERN C: Liquidity Hunt → Reversal
-        elif (state.sweep_detected and
-              state.rejection_at_level and
-              state.effort_result_zscore > 2.0 and
-              (state.outside_bar or state.failed_breakout)):
+        elif all(liq_conds.values()):
             mr_conf *= 1.35
             tf_conf *= 0.60
             state.institutional_pattern = "LIQUIDITY_HUNT"
@@ -2576,6 +2615,7 @@ Adds Governor + Volatility + Sniper checks to existing aggregator
                             "regime": regime_name,
                             "reasoning": "blocked_by_trap_filter",
                             "final_signal": 0,
+                            "original_signal": mr_signal or tf_signal or ema_signal, # Pass the intended direction
                             "signal_quality": 0.0,
                             "mr_signal": mr_signal,
                             "mr_confidence": mr_conf,
@@ -2668,6 +2708,10 @@ Adds Governor + Volatility + Sniper checks to existing aggregator
                             f"[INDEPENDENT] {self.asset_type}: {best_name} fires alone "
                             f"(conf={best_conf:.2f}, aligned={len(agreeing)} strategies)"
                         )
+
+                # Update original_signal to capture any consensus OR independent signal
+                # before final filters (volatility, governor, etc) are applied.
+                original_signal = final_signal
 
                 # World-Class Filters
                 # Fix D: profit filter removed — it duplicated the volatility filter (both

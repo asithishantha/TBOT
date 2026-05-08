@@ -1110,6 +1110,7 @@
     "allow_hedging": true,
     "small_account_protocol": true,
     "place_vtm_sl_on_exchange": false,
+    "place_vtm_tp_on_exchange": false,
     "task_scheduler_name": "TBOT",
     "enabled": true
   },

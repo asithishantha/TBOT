@@ -1111,7 +1111,8 @@
     "allow_hedging": true,
     "small_account_protocol": true,
     "place_vtm_sl_on_exchange": false,
-    "task_scheduler_name": "TBOT"
+    "place_vtm_tp_on_exchange": false,
+    "task_scheduler_name": "TBOT",
   },
   "risk_management": {
     "max_daily_trades": 10,

@@ -870,6 +870,7 @@ _EDITABLE_FIELDS = [
     # ── Global: VTM Execution ─────────────────────────────────────────────────
     ("trading.enabled",                   "Global Trading Enabled",          "bool", {}),
     ("trading.place_vtm_sl_on_exchange",  "Place VTM Stop Loss on Exchange", "bool", {}),
+    ("trading.place_vtm_tp_on_exchange",  "Place VTM Take Profit on Exchange", "bool", {}),
 ]
 
 _ASSETS = ["BTC", "GOLD", "EURUSD", "EURJPY", "USTEC", "USOIL", "GBPAUD"]

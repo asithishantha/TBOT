@@ -561,20 +561,33 @@ class InstitutionalCouncilAggregator:
             _last_price, _last_time = _last
             _minutes_since_move = (_now - _last_time).total_seconds() / 60
             _price_moved = abs(_current_price - _last_price) / max(_last_price, 1) > 0.00001
-            if not _price_moved and _minutes_since_move > self._stale_threshold_minutes:
-                logger.warning(
-                    f"[COUNCIL] ⏸️ Stale price: {self.asset_type} frozen at "
-                    f"{_current_price} for {_minutes_since_move:.0f}min — blocking"
-                )
-                return 0, {
-                    "timestamp": timestamp, "signal": 0, "asset": self.asset_type,
-                    "reasoning": f"stale_price_{_minutes_since_move:.0f}min",
-                    "final_signal": 0, "signal_quality": 0.0,
-                    "mr_signal": 0, "mr_confidence": 0.0,
-                    "tf_signal": 0, "tf_confidence": 0.0,
-                    "ema_signal": 0, "ema_confidence": 0.0,
-                }
-        if not _last or abs(_current_price - _last[0]) / max(_last[0], 1) > 0.00001:
+            if not _price_moved:
+                if _minutes_since_move > self._stale_threshold_minutes:
+                    logger.warning(
+                        f"[COUNCIL] ⏸️ Stale price: {self.asset_type} frozen at "
+                        f"{_current_price} for {_minutes_since_move:.0f}min — blocking"
+                    )
+                    return 0, {
+                        "timestamp": timestamp, "signal": 0, "asset": self.asset_type,
+                        "reasoning": f"stale_price_{_minutes_since_move:.0f}min",
+                        "final_signal": 0, "signal_quality": 0.0,
+                        "mr_signal": 0, "mr_confidence": 0.0,
+                        "tf_signal": 0, "tf_confidence": 0.0,
+                        "ema_signal": 0, "ema_confidence": 0.0,
+                    }
+                # ✅ IMPORTANT: Even if price didn't move, if we successfully fetched data
+                # that matches the current anchor, we don't update the anchor.
+                # However, if we WANT to reset the timer because we verified the "stillness" 
+                # is from fresh data, we would update the time.
+                # BUT the user reports the fetched close prices ARE moving.
+                # If they move > 0.001% (0.00001), they will hit the update block below.
+                # If they move LESS than that, the timer keeps ticking.
+                
+            else:
+                # Price moved! Update anchor immediately
+                self._last_prices[self.asset_type] = (_current_price, _now)
+        else:
+            # First run for this asset
             self._last_prices[self.asset_type] = (_current_price, _now)
 
         # ════════════════════════════════════════════════════════════════════
@@ -950,6 +963,9 @@ class InstitutionalCouncilAggregator:
                 total_score = sell_total
                 required_score = self.counter_trend_threshold
                 chosen_scores = sell_scores
+
+            # Capture initial consensus before penalties and vetos
+            original_signal = signal
             
             # ====================================================================
             # 🛡️ THE INTERCEPTOR: ABSOLUTE VETO (Phase 4)
@@ -979,7 +995,9 @@ class InstitutionalCouncilAggregator:
                             'timestamp': timestamp,
                             'signal': 0,
                             'asset': self.asset_type,
-                            'decision_type': "BLOCKED (Opposite Trend)",
+                            'decision_type': f"BLOCKED (Opposite Trend)",
+                            'action': 'rejected',
+                            'original_signal': signal,
                             'reasoning': "blocked_by_opposite_trend",
                             'final_signal': 0,
                             'signal_quality': 0.0,
@@ -1007,6 +1025,8 @@ class InstitutionalCouncilAggregator:
                             'signal': 0,
                             'asset': self.asset_type,
                             'decision_type': "BLOCKED (Macro Regime Conflict)",
+                            'action': 'rejected',
+                            'original_signal': signal,
                             'reasoning': "blocked_by_macro_governor",
                             'final_signal': 0,
                             'signal_quality': 0.0,
@@ -1042,6 +1062,8 @@ class InstitutionalCouncilAggregator:
                         'signal': 0,
                         'asset': self.asset_type,
                         'decision_type': "BLOCKED (Institutional Wick Trap)",
+                        'action': 'rejected',
+                        'original_signal': signal,
                         'reasoning': "blocked_by_trap_filter",
                         'final_signal': 0,
                         'signal_quality': 0.0,
@@ -1066,6 +1088,8 @@ class InstitutionalCouncilAggregator:
                         'signal': 0,
                         'asset': self.asset_type,
                         'decision_type': "BLOCKED (Dead Market Volatility)",
+                        'action': 'rejected',
+                        'original_signal': signal,
                         'reasoning': "low_volatility_veto",
                         'final_signal': 0,
                         'signal_quality': 0.0,
@@ -1099,6 +1123,8 @@ class InstitutionalCouncilAggregator:
                                 'signal': 0,
                                 'asset': self.asset_type,
                                 'decision_type': "BLOCKED (Inverted TP Magnet)",
+                                'action': 'rejected',
+                                'original_signal': signal,
                                 'reasoning': "inverted_mr_magnet_long",
                                 'final_signal': 0,
                                 'signal_quality': 0.0,
@@ -1118,6 +1144,8 @@ class InstitutionalCouncilAggregator:
                                 'signal': 0,
                                 'asset': self.asset_type,
                                 'decision_type': "BLOCKED (Inverted TP Magnet)",
+                                'action': 'rejected',
+                                'original_signal': signal,
                                 'reasoning': "inverted_mr_magnet_short",
                                 'final_signal': 0,
                                 'signal_quality': 0.0,
@@ -1149,6 +1177,8 @@ class InstitutionalCouncilAggregator:
                         logger.info(f"[COUNCIL] R/R Gate: Trend trade rejected (R/R: {rr_ratio:.2f} < 1.0)")
                         return 0, {
                             'timestamp': timestamp, 
+                            'action': 'rejected',
+                            'original_signal': signal,
                             'reasoning': "rr_gate_rejected_trend", 
                             'signal': 0, 
                             'rr_ratio': rr_ratio,
@@ -1166,6 +1196,8 @@ class InstitutionalCouncilAggregator:
                         logger.info(f"[COUNCIL] MR Trade rejected due to poor R/R (Magnet: {ema_20:.2f}, R/R: {rr_ratio:.2f} < 0.6).")
                         return 0, {
                             'timestamp': timestamp, 
+                            'action': 'rejected',
+                            'original_signal': signal,
                             'reasoning': "rr_gate_rejected_reversion", 
                             'signal': 0, 
                             'rr_ratio': rr_ratio,
@@ -1268,6 +1300,8 @@ class InstitutionalCouncilAggregator:
                                 'signal': 0,
                                 'asset': self.asset_type,
                                 'decision_type': f"BLOCKED (Strategy Circuit Breaker: {winrate:.1%})",
+                                'action': 'rejected',
+                                'original_signal': signal,
                                 'reasoning': "strategy_circuit_breaker",
                                 'final_signal': 0,
                                 'signal_quality': 0.0,
