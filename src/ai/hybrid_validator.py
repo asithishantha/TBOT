@@ -265,7 +265,11 @@ class HybridSignalValidator:
         regime = signal_details.get("regime", "NEUTRAL")
         is_bull_regime = "BULL" in regime.upper() or "BULLISH" in regime.upper()
         is_bear_regime = "BEAR" in regime.upper() or "BEARISH" in regime.upper()
-        regime_aligned = (signal == 1 and is_bull_regime) or (signal == -1 and is_bear_regime)
+        is_neutral_regime = not is_bull_regime and not is_bear_regime
+        
+        # In NEUTRAL regimes, we treat the signal as "potentially aligned" to allow 
+        # momentum-based soft passes (Phase 3 recovery logic).
+        regime_aligned = (signal == 1 and is_bull_regime) or (signal == -1 and is_bear_regime) or is_neutral_regime
 
         # ── 1H session momentum alignment ───────────────────────────────────
         # Extracted from the MTF regime detector's new intraday slope fields.

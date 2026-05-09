@@ -269,7 +269,7 @@ class TradingBot:
         self.daily_loss = 0.0
         self.last_trade_date = None
         self.last_trade_times = {}
-        self.last_market_status_log = None
+        self.last_market_status_log = {}  # Per-asset logging dictionary
 
         # Signal aggregators
         self.aggregators = {}
@@ -2547,6 +2547,11 @@ class TradingBot:
 
             # ✨ NEW: Update historical data every hour (or every 12 cycles if running every 5 min)
             current_time = datetime.now()
+            
+            # Debug log to track history update frequency
+            time_since_last = (current_time - self._last_history_update).total_seconds() if self._last_history_update else "N/A"
+            logger.info(f"[HISTORY] Last update: {self._last_history_update} ({time_since_last}s ago)")
+
             if (
                 self._last_history_update is None
                 or (current_time - self._last_history_update).total_seconds() > 3600
@@ -3185,65 +3190,36 @@ class TradingBot:
                 logger.info(f"[COOLDOWN] {asset_name}: {remaining:.0f}min remaining (limit={min_minutes:.0f}min, regime={regime})")
                 return False
 
-        return True
-
     def check_market_hours(self, asset_name: str) -> bool:
         """Check if market is open for the asset"""
         asset_name_upper = asset_name.upper()
-        
-        # Crypto is 24/7
+
+        # 1. Crypto is 24/7
         if "BTC" in asset_name_upper:
             return True
-            
-        # GOLD and USTEC (Nasdaq) follow similar exchange hours (using GOLD as proxy for now)
-        if "GOLD" in asset_name_upper or "USTEC" in asset_name_upper:
-            is_open = should_trade_gold()
-            if not is_open:
-                status, message = MarketHours.get_market_status("gold")
-                current_hour = datetime.now().hour
-                if self.last_market_status_log != current_hour:
-                    logger.info(f"[MARKET] {asset_name}: {message}")
-                    self.last_market_status_log = current_hour
-                return False
-            
-            # ✅ TASK 24: Rollover Dead Zone Protection
-            # Reason: Spreads explode and liquidity vanishes during 21:30 - 23:30 UTC.
-            if MarketHours.is_rollover_dead_zone():
-                current_hour = datetime.now().hour
-                if self.last_market_status_log != current_hour:
-                    logger.info(f"[MARKET] {asset_name}: Rollover Dead Zone (21:30-23:30 UTC) — Blocking entry.")
-                    self.last_market_status_log = current_hour
-                return False
-                
-            return True
-            
-        # Forex (EURJPY, EURUSD) is 24/5
-        if "EUR" in asset_name_upper or "GBP" in asset_name_upper:
-            # Simple check for weekend (Saturday/Sunday UTC)
-            # Forex typically closes Friday 22:00 UTC and opens Sunday 22:00 UTC
-            now = datetime.now(timezone.utc)
-            weekday = now.weekday() # 0=Mon, 5=Sat, 6=Sun
-            
-            if weekday == 5: # Saturday
-                return False
-            if weekday == 6: # Sunday
-                if now.hour < 22:
-                    return False
-            if weekday == 4 and now.hour >= 22: # Friday evening
-                return False
-            
-            # ✅ TASK 24: Rollover Dead Zone Protection
-            if MarketHours.is_rollover_dead_zone():
-                current_hour = datetime.now().hour
-                if self.last_market_status_log != current_hour:
-                    logger.info(f"[MARKET] {asset_name}: Rollover Dead Zone (21:30-23:30 UTC) — Blocking entry.")
-                    self.last_market_status_log = current_hour
-                return False
-                
-            return True
-            
-        return True
 
+        # 2. Check Weekend Block for Institutional Assets (Gold, USOIL, Forex)
+        is_open = MarketHours.should_trade(asset_name)
+        if not is_open:
+            status, message = MarketHours.get_market_status("forex")
+            current_hour = datetime.now().hour
+            
+            # Use per-asset logging
+            if self.last_market_status_log.get(asset_name) != current_hour:
+                logger.info(f"[MARKET] {asset_name}: {message}")
+                self.last_market_status_log[asset_name] = current_hour
+            return False
+
+        # 3. Rollover Dead Zone Protection (21:30 - 23:30 UTC)
+        # Reason: Spreads explode and liquidity vanishes during this period.
+        if MarketHours.is_rollover_dead_zone():
+            current_hour = datetime.now().hour
+            if self.last_market_status_log.get(asset_name) != current_hour:
+                logger.info(f"[MARKET] {asset_name}: Rollover Dead Zone (21:30-23:30 UTC) — Blocking entry.")
+                self.last_market_status_log[asset_name] = current_hour
+            return False
+
+        return True
     @handle_errors(
         component="trade_asset",
         severity=ErrorSeverity.ERROR,
@@ -3261,7 +3237,7 @@ class TradingBot:
 
         # Check market hours BEFORE trading
         if not self.check_market_hours(asset_name):
-            logger.debug(f"[SKIP] {asset_name}: Market closed")
+            logger.info(f"[SKIP] {asset_name}: Market closed")
             return
 
         exchange = asset_cfg.get("exchange", "binance")
@@ -3346,8 +3322,14 @@ class TradingBot:
                 # ✅ CRITICAL: Force a live price fetch ONLY at the moment of execution
                 current_price = handler.get_current_price(symbol, force_live=True)
             except Exception as e:
-                logger.debug(f"[TRADE ASSET] Live price fetch failed ({e}), using last close")
-                current_price = float(df["close"].iloc[-1])
+                # Log stale data details for easier debugging
+                last_ts = df.index[-1] if not df.empty else "N/A"
+                last_c = df["close"].iloc[-1] if not df.empty else "N/A"
+                logger.warning(
+                    f"[TRADE ASSET] Live price fetch failed ({e}). "
+                    f"Falling back to stale CSV close from {last_ts}: ${last_c}"
+                )
+                current_price = float(df["close"].iloc[-1]) if not df.empty else 0.0
 
             # ✅ RE-CALCULATE REGIME (5min Cache): Ensure we are using fresh regime data
             # before making any directional decisions. This prevents staying in a stale 

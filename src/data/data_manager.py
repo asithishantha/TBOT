@@ -335,17 +335,18 @@ class DataManager:
             end_ts = int(end_dt.timestamp() * 1000)
 
             # ✅ SMART CLIENT SELECTION
-            # For historical analysis (>7 days), prefer live API
+            # For historical analysis, prefer live API to ensure real market prices
+            # regardless of whether we are in testnet for trading.
             days_requested = (end_dt - start_dt).days
-            use_live = use_live_for_history and days_requested > 7
-
+            use_live = use_live_for_history
+            
             client = self._get_data_client(prefer_live=use_live)
 
             if use_live and self.live_data_client:
                 logger.info(f"📊 Fetching {symbol} from LIVE API (full history)")
             else:
                 logger.info(
-                    f"📊 Fetching {symbol} from {'testnet' if self.config['api']['binance'].get('testnet') else 'live'} API"
+                    f"📊 Fetching {symbol} from {'testnet' if self.config['api']['binance'].get('testnet', True) else 'live'} API"
                 )
 
             logger.info(f"   Period: {start_dt} to {end_dt} (UTC)")

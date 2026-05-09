@@ -279,25 +279,11 @@ class MarketHours:
         
         # Map common asset names to types
         if asset_type in ["btc", "bitcoin", "crypto", "eth", "ethereum"]:
-            # ✅ TASK 23: Session Quality Gate (Institutional Grade)
-            # Reason: Avoid low-liquidity "wash trading" and erratic weekend moves.
-            now = MarketHours.get_gmt_time()
-            day = now.weekday()
-            hour = now.hour
-            
-            # Block Friday 22:00 UTC to Sunday 22:00 UTC
-            if day == 4 and hour >= 22: # Friday Night
-                return False
-            if day == 5: # Saturday
-                return False
-            if day == 6 and hour < 22: # Sunday before open
-                return False
-                
+            # ✅ Crypto is 24/7 - Removed Institutional Weekend Gate
             return True
-        
-        if asset_type in ["gold", "xauusd", "forex", "eur", "gbp", "usd"]:
-            return MarketHours.is_forex_market_open()
-        
+
+        if asset_type in ["gold", "xauusd", "forex", "eur", "gbp", "usd", "usoil"]:
+            return MarketHours.is_forex_market_open()        
         if asset_type in ["stocks", "spy", "qqq", "aapl"]:
             return MarketHours.is_us_stock_market_open()
         

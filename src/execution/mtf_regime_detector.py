@@ -403,9 +403,14 @@ class MultiTimeFrameRegimeDetector:
                 reasons.append("Macro BULLISH: Above 4H 200 (Not yet extended)")
             else:
                 # 1D says bullish but 4H hasn't confirmed yet — transitional bullish zone
-                consensus_regime = "SLIGHTLY_BULLISH"
-                score = 0.5
-                reasons.append("Macro BULLISH: Below 4H 200 but 1D structure intact — transitional bullish zone.")
+                if not above_4h_50 and not above_1h_50:
+                    consensus_regime = "NEUTRAL"
+                    score = 0.0
+                    reasons.append("Macro BULLISH but 4H/1H Correction: Transitional NEUTRAL zone.")
+                else:
+                    consensus_regime = "SLIGHTLY_BULLISH"
+                    score = 0.5
+                    reasons.append("Macro BULLISH: Below 4H 200 but 1D structure intact — transitional bullish zone.")
         
         elif macro_bearish:
             # BLOCK BULLISH STATES
@@ -419,9 +424,14 @@ class MultiTimeFrameRegimeDetector:
                 reasons.append("Macro BEARISH: Below 4H 200 (Not yet extended)")
             else:
                 # 1D says bearish but 4H hasn't confirmed yet — transitional bearish zone
-                consensus_regime = "SLIGHTLY_BEARISH"
-                score = -0.5
-                reasons.append("Macro BEARISH: Above 4H 200 but 1D structure broken — transitional bearish zone.")
+                if above_4h_50 and above_1h_50:
+                    consensus_regime = "NEUTRAL"
+                    score = 0.0
+                    reasons.append("Macro BEARISH but 4H/1H Recovery: Transitional NEUTRAL zone.")
+                else:
+                    consensus_regime = "SLIGHTLY_BEARISH"
+                    score = -0.5
+                    reasons.append("Macro BEARISH: Above 4H 200 but 1D structure broken — transitional bearish zone.")
         
         else:
             consensus_regime = "NEUTRAL"

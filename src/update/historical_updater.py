@@ -89,7 +89,13 @@ class HistoricalDataUpdater:
         try:
             # ✅ Check Market Hours
             from src.utils.market_hours import MarketHours
-            if not MarketHours.should_trade(asset_name):
+            # BTC/Crypto is 24/7, ignore the institutional weekend gate for data updates
+            if "BTC" in asset_name.upper():
+                market_open = True
+            else:
+                market_open = MarketHours.should_trade(asset_name)
+
+            if not market_open:
                 logger.debug(f"[UPDATE] Skipping {asset_name} {timeframe.upper()} - Market is CLOSED")
                 return True
 

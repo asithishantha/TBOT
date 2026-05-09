@@ -459,6 +459,20 @@ class BinanceExecutionHandler:
         try:
             # This is the only place that should call a live ticker endpoint.
             if self.futures_handler:
+                # If in paper mode, we want a REAL price, not testnet.
+                # Testnet prices can diverge significantly from the real market.
+                if self.is_paper_mode:
+                    try:
+                        # Use a public client for live futures data (no keys needed)
+                        from binance.client import Client as BClient
+                        public_client = BClient("", "", requests_params={'timeout': 5})
+                        public_client.API_URL = "https://fapi.binance.com"
+                        ticker = public_client.futures_symbol_ticker(symbol=symbol)
+                        return float(ticker["price"])
+                    except Exception as e:
+                        logger.debug(f"[PRICE] Could not fetch live futures ticker for {symbol}: {e}")
+                
+                # Fallback to the primary client (might be testnet or live keys)
                 ticker = self.client.futures_symbol_ticker(symbol=symbol)
                 return float(ticker["price"])
             else:
@@ -485,21 +499,17 @@ class BinanceExecutionHandler:
 
         # 1. If a live price is forced, attempt to fetch it first.
         if force_live:
-            # In paper mode, we still return a mock price but log that it's a "live" request.
-            if self.is_paper_mode:
-                mock_price = 40000.0 
-                price_cache.set(symbol, mock_price)
-                logger.info(f"[CACHE] Live price requested in paper mode. Returning mock price: {mock_price}")
-                return mock_price
-
+            # In paper mode, we attempt a live fetch but don't fail if it's unavailable
             live_price = self._fetch_live_futures_price(symbol)
             if live_price is not None:
                 # Update cache and return the fresh price.
                 price_cache.set(symbol, live_price)
-                #logger.info(f"[CACHE] Live price fetched and cache updated: {live_price}")
                 return live_price
             else:
-                logger.warning(f"[PRICE] Live fetch failed. Falling back to cache for {symbol}.")
+                if self.is_paper_mode:
+                    logger.debug(f"[PRICE] Live fetch failed in paper mode for {symbol}. Using cache/fallback.")
+                else:
+                    logger.warning(f"[PRICE] Live fetch failed. Falling back to cache for {symbol}.")
 
         # 2. If not forcing live, or if live fetch failed, try the cache.
         cached_price = price_cache.get(symbol)
@@ -509,7 +519,7 @@ class BinanceExecutionHandler:
         # 3. As a final fallback, check the last known price from the cache.
         last_known_price = price_cache.get_last_known(symbol)
         if last_known_price:
-            logger.warning(f"[PRICE] Using stale cached price for {symbol}: {last_known_price}")
+            logger.info(f"[PRICE] Using last known cached price for {symbol}: {last_known_price}")
             return last_known_price
         
         logger.error(f"Error fetching price for {symbol}: All methods (live and cache) failed.")

@@ -2679,11 +2679,17 @@ Adds Governor + Volatility + Sniper checks to existing aggregator
                 elif regime_is_bullish:
                     # TF/EMA: block shorts (counter-trend in bull)
                     if tf_signal < 0:
-                        logger.info(f"[GATEKEEPER] ❌ BLOCKED SHORT (TF): Bullish regime for {self.asset_type}")
-                        tf_signal = 0; tf_conf = 0.0
+                        if self._is_explosive_momentum(df, -1):
+                            logger.info(f"[GATEKEEPER] 🚀 EXPLOSIVE MOMENTUM - Overruling Bullish block for SHORT (TF)")
+                        else:
+                            logger.info(f"[GATEKEEPER] ❌ BLOCKED SHORT (TF): Bullish regime for {self.asset_type}")
+                            tf_signal = 0; tf_conf = 0.0
                     if ema_signal < 0:
-                        logger.info(f"[GATEKEEPER] ❌ BLOCKED SHORT (EMA): Bullish regime for {self.asset_type}")
-                        ema_signal = 0; ema_conf = 0.0
+                        if self._is_explosive_momentum(df, -1):
+                            logger.info(f"[GATEKEEPER] 🚀 EXPLOSIVE MOMENTUM - Overruling Bullish block for SHORT (EMA)")
+                        else:
+                            logger.info(f"[GATEKEEPER] ❌ BLOCKED SHORT (EMA): Bullish regime for {self.asset_type}")
+                            ema_signal = 0; ema_conf = 0.0
                     # MR: block counter-trend SELL, allow trend-aligned BUY (dip buying)
                     if mr_signal < 0:
                         logger.info(f"[GATEKEEPER] ❌ BLOCKED SHORT (MR): Counter-trend in Bullish for {self.asset_type}")
@@ -2694,11 +2700,17 @@ Adds Governor + Volatility + Sniper checks to existing aggregator
                 elif regime_is_bearish:
                     # TF/EMA: block longs (counter-trend in bear)
                     if tf_signal > 0:
-                        logger.info(f"[GATEKEEPER] ❌ BLOCKED LONG (TF): Bearish regime for {self.asset_type}")
-                        tf_signal = 0; tf_conf = 0.0
+                        if self._is_explosive_momentum(df, 1):
+                            logger.info(f"[GATEKEEPER] 🚀 EXPLOSIVE MOMENTUM - Overruling Bearish block for LONG (TF)")
+                        else:
+                            logger.info(f"[GATEKEEPER] ❌ BLOCKED LONG (TF): Bearish regime for {self.asset_type}")
+                            tf_signal = 0; tf_conf = 0.0
                     if ema_signal > 0:
-                        logger.info(f"[GATEKEEPER] ❌ BLOCKED LONG (EMA): Bearish regime for {self.asset_type}")
-                        ema_signal = 0; ema_conf = 0.0
+                        if self._is_explosive_momentum(df, 1):
+                            logger.info(f"[GATEKEEPER] 🚀 EXPLOSIVE MOMENTUM - Overruling Bearish block for LONG (EMA)")
+                        else:
+                            logger.info(f"[GATEKEEPER] ❌ BLOCKED LONG (EMA): Bearish regime for {self.asset_type}")
+                            ema_signal = 0; ema_conf = 0.0
                     # MR: block counter-trend BUY (falling knives), allow trend-aligned SELL
                     if mr_signal > 0:
                         logger.info(f"[GATEKEEPER] ❌ BLOCKED LONG (MR): Counter-trend in Bearish for {self.asset_type}")
