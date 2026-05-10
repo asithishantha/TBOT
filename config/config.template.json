@@ -1105,14 +1105,14 @@
     "allow_simultaneous_positions": true,
     "max_simultaneous_positions": 10,
     "position_timeout_hours": 720,
-    "min_time_between_trades_minutes": 60,
+    "min_time_between_trades_minutes": 480,
     "check_interval_seconds": 300,
     "max_positions_per_asset": 3,
     "allow_hedging": true,
     "small_account_protocol": true,
     "place_vtm_sl_on_exchange": false,
     "place_vtm_tp_on_exchange": false,
-    "task_scheduler_name": "TBOT",
+    "task_scheduler_name": "TBOT"
   },
   "risk_management": {
     "max_daily_trades": 10,

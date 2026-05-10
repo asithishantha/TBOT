@@ -2158,6 +2158,33 @@ Adds Governor + Volatility + Sniper checks to existing aggregator
                     })
             
             # ================================================================
+            # 7. Established Trend + BOS Confirmation (Institutional Continuation)
+            # ================================================================
+            # Reason: When the lifecycle is ESTABLISHED/CONFIRMATION with a fresh
+            # Break-of-Structure and aligned slopes, this is a classic institutional
+            # trend-continuation setup. It is valid regardless of the macro regime
+            # label (which reads NEUTRAL during transitional phases).
+            # The TREND_MOMENTUM trigger only fires for explicit BULL/BEAR regimes,
+            # so without this trigger these high-quality setups would be silently
+            # blocked despite a strong TF signal.
+            _cs = getattr(self, '_cached_composite', None)
+            if _cs is not None:
+                if (
+                    _cs.lifecycle_phase in ("CONFIRMATION", "ESTABLISHED")
+                    and _cs.bos_detected
+                    and _cs.slopes_aligned
+                    and not _cs.structural_decay
+                    and not _cs.absorption_detected
+                    and _cs.regime_age_ratio < 2.0
+                ):
+                    reasons.append({
+                        'passed': True,
+                        'trigger_type': 'ESTABLISHED_BOS',
+                        'phase': _cs.lifecycle_phase,
+                        'age_ratio': round(_cs.regime_age_ratio, 2),
+                    })
+
+            # ================================================================
             # Final Decision
             # ================================================================
             if reasons:

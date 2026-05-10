@@ -17,6 +17,7 @@ from datetime import datetime, timedelta, timezone
 import schedule
 import io
 import signal
+import threading
 from threading import Thread, Event
 from typing import Optional, Tuple, Dict
 from types import SimpleNamespace
@@ -307,6 +308,7 @@ class TradingBot:
 
         # F.4: CVD WebSocket consumer for BTC order flow
         self.cvd_consumer: Optional[CVDConsumer] = None
+        self.cvd_thread: Optional[threading.Thread] = None
 
         # Initialize components in CORRECT order
         self._initialize_telegram()
@@ -622,7 +624,7 @@ class TradingBot:
                 # Look back far enough to cover the longest possible cooldown
                 max_cooldown_h = max(
                     self.config.get("trading", {}).get(
-                        "min_time_between_trades_minutes", 60
+                        "min_time_between_trades_minutes", 480
                     ),
                     120,          # hard floor: never look back less than 2 hours
                 ) / 60.0 * 1.2   # 20 % buffer
@@ -1736,6 +1738,10 @@ class TradingBot:
                     mtf_regime["depth_data"] = self.cvd_consumer.get_depth()
             if hasattr(self, "_dxy_falling"):
                 mtf_regime["dxy_falling"] = self._dxy_falling
+            # df_4h injection: CompositeState, TransitionDetector momentum, MR/TF strategies,
+            # and 4H slope alignment all read governor_data.get('df_4h'). Without this the
+            # cached 4H data was fetched but never reached the aggregator.
+            mtf_regime["df_4h"] = self._df_4h_cache.get(asset_name)
 
             # ✅ FIXED: Pass full market context to the Institutional Council
             signal, details = aggregator.get_aggregated_signal(
@@ -1775,6 +1781,10 @@ class TradingBot:
                     mtf_regime["depth_data"] = self.cvd_consumer.get_depth()
             if hasattr(self, "_dxy_falling"):
                 mtf_regime["dxy_falling"] = self._dxy_falling
+            # df_4h injection: CompositeState, TransitionDetector momentum, MR/TF strategies,
+            # and 4H slope alignment all read governor_data.get('df_4h'). Without this the
+            # cached 4H data was fetched but never reached the aggregator.
+            mtf_regime["df_4h"] = self._df_4h_cache.get(asset_name)
 
             signal, details = aggregator.get_aggregated_signal(
                 df,
@@ -3197,7 +3207,7 @@ class TradingBot:
         In strongly-trending regimes (BEARISH/BULLISH) a 0.5× multiplier is applied
         so the bot can re-enter faster when the move is still clearly intact.
         """
-        global_default = self.config["trading"].get("min_time_between_trades_minutes", 60)
+        global_default = self.config["trading"].get("min_time_between_trades_minutes", 480)
 
         # Per-asset override (e.g. GOLD: min_time_between_trades_minutes: 30)
         asset_cfg = self.config.get("assets", {}).get(asset_name, {})
@@ -3211,7 +3221,15 @@ class TradingBot:
         if regime in ("BULLISH", "BEARISH") and regime_conf >= 0.7:
             min_minutes = max(15, min_minutes * 0.5)
 
+        # Bypass cooldown entirely when there are no open positions for the asset.
+        # The cooldown exists to prevent over-trading; with zero exposure there is
+        # nothing to protect and blocking here only causes missed entries.
         if asset_name in self.last_trade_times:
+            open_positions = self.portfolio_manager.get_asset_positions(asset_name)
+            if not open_positions:
+                logger.debug(f"[COOLDOWN] {asset_name}: no open positions — cooldown bypassed")
+                return True
+
             elapsed = datetime.now() - self.last_trade_times[asset_name]
             if elapsed.total_seconds() < min_minutes * 60:
                 remaining = min_minutes - (elapsed.total_seconds() / 60)
@@ -3330,6 +3348,10 @@ class TradingBot:
 
             # Fetch and cache 4H data for VTM loop
             self._df_4h_cache[asset_name] = self._fetch_4h_data(asset_name)
+            # Propagate df_4h into the persistent regime dict so it's available
+            # to the hybrid selector forks even on cycles where MTF wasn't re-run.
+            if asset_name in self._current_regime_data:
+                self._current_regime_data[asset_name]["df_4h"] = self._df_4h_cache.get(asset_name)
 
             if len(df) < 250:
                 logger.warning(
@@ -4584,13 +4606,23 @@ class TradingBot:
             logger.info("[SHADOW] Shadow trading engine started")
 
             # F.4: Start CVD WebSocket for BTC real-time order flow
+            # THREADING FIX: main.py's start() is synchronous and enters a blocking while-loop.
+            # asyncio.get_event_loop().create_task() creates a coroutine but the event loop is
+            # never driven, so the WebSocket task starves and the CVD feed stays permanently stale.
+            # Running asyncio.run() inside a daemon thread gives the coroutine its own event loop.
             try:
                 self.cvd_consumer = CVDConsumer()
-                asyncio.get_event_loop().create_task(self.cvd_consumer.start())
-                logger.info("[CVD] ✅ BTC order flow WebSocket started")
+                self.cvd_thread = threading.Thread(
+                    target=lambda: asyncio.run(self.cvd_consumer.start()),
+                    daemon=True,
+                    name="cvd-websocket",
+                )
+                self.cvd_thread.start()
+                logger.info("[CVD] ✅ BTC order flow WebSocket started in daemon thread")
             except Exception as _cvd_err:
                 logger.warning(f"[CVD] Failed to start: {_cvd_err}. BTC order flow disabled.")
                 self.cvd_consumer = None
+                self.cvd_thread = None
 
             # ✅ FIXED: Initialize selectors AFTER exchanges are connected
             self.dynamic_selector = DynamicPresetSelector(
@@ -4648,13 +4680,6 @@ class TradingBot:
                 self.telegram_thread.start()
                 logger.info("[TELEGRAM] ✅ Telegram thread started.")
             
-            # NEW: Start high-frequency VTM management thread
-            self.vtm_thread = Thread(
-                target=self._vtm_management_loop, daemon=True, name="VTMManager"
-            )
-            self.vtm_thread.start()
-            logger.info("[VTM] ✅ VTM management thread started.")
-
             # Start dashboard server
             self.dashboard_server = start_dashboard_server()
 
@@ -4672,6 +4697,14 @@ class TradingBot:
 
             self.is_running = True
             self._main_loop_running = True
+
+            # Start high-frequency VTM management thread AFTER is_running=True
+            # so the while self.is_running loop can actually run.
+            self.vtm_thread = Thread(
+                target=self._vtm_management_loop, daemon=True, name="VTMManager"
+            )
+            self.vtm_thread.start()
+            logger.info("[VTM] ✅ VTM management thread started.")
 
             logger.info(f"\n[OK] Trading bot running")
             logger.info(
