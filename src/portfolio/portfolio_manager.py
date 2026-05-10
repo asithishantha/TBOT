@@ -1202,15 +1202,21 @@ class PortfolioManager:
                     total_balance = float(account.get("totalWalletBalance", 0))
                     available = float(account.get("availableBalance", 0))
                     unrealized_pnl = float(account.get("totalUnrealizedProfit", 0))
+                    # Use margin balance (wallet + unrealized PnL) = true account equity.
+                    # This prevents a false circuit-breaker trigger when an already-open
+                    # losing position is imported at startup: the loss is already "priced
+                    # in" to the margin balance, so closing the position produces zero
+                    # delta rather than a sudden drop from a cash-only baseline.
+                    margin_balance = total_balance + unrealized_pnl
 
                     logger.info(
                         f"[BINANCE FUTURES] Balance breakdown:\n"
-                        f"  USDT Total: ${total_balance:,.2f}\n"
+                        f"  Wallet:     ${total_balance:,.2f}\n"
                         f"  USDT Free:  ${available:,.2f}\n"
-                        f"  Unrealized: ${unrealized_pnl:,.2f}\n"
-                        f"  Total: ${total_balance:,.2f}"
+                        f"  Unrealized: ${unrealized_pnl:+,.2f}\n"
+                        f"  Equity:     ${margin_balance:,.2f}"
                     )
-                    return total_balance if total_balance > 0 else 0.0
+                    return margin_balance if margin_balance > 0 else 0.0
                 except Exception as e:
                     logger.error(f"[BINANCE] Error calling futures_account: {e}")
                     return None
@@ -2778,12 +2784,24 @@ class PortfolioManager:
         logger.info("Daily P&L tracker reset")
 
     def start_trading_session(self):
-        """Start trading session"""
+        """Start trading session.
+
+        session_start_equity is intentionally set to the CURRENT margin balance
+        (wallet + unrealized PnL) so that positions imported from a prior session
+        don't create a phantom loss when they are closed: their unrealized P&L is
+        already baked into the baseline, and the circuit-breaker only fires on
+        NEW losses incurred during this session.
+        """
         self.session_start_time = datetime.now()
         self.session_start_equity = self.equity
         self.session_start_capital = self.current_capital
         self.realized_pnl_today = 0.0
-        logger.info(f"Trading session started at {self.session_start_time}")
+        open_count = len(self.positions)
+        logger.info(
+            f"Trading session started at {self.session_start_time}\n"
+            f"  Session-start equity: ${self.session_start_equity:,.2f}"
+            + (f"  ({open_count} imported position(s) already priced in)" if open_count else "")
+        )
 
     def get_portfolio_status(self, current_prices: Dict[str, float] = None) -> Dict:
         """
@@ -3333,12 +3351,24 @@ class PortfolioManager:
         logger.info("Daily P&L tracker reset")
 
     def start_trading_session(self):
-        """Start trading session"""
+        """Start trading session.
+
+        session_start_equity is intentionally set to the CURRENT margin balance
+        (wallet + unrealized PnL) so that positions imported from a prior session
+        don't create a phantom loss when they are closed: their unrealized P&L is
+        already baked into the baseline, and the circuit-breaker only fires on
+        NEW losses incurred during this session.
+        """
         self.session_start_time = datetime.now()
         self.session_start_equity = self.equity
         self.session_start_capital = self.current_capital
         self.realized_pnl_today = 0.0
-        logger.info(f"Trading session started at {self.session_start_time}")
+        open_count = len(self.positions)
+        logger.info(
+            f"Trading session started at {self.session_start_time}\n"
+            f"  Session-start equity: ${self.session_start_equity:,.2f}"
+            + (f"  ({open_count} imported position(s) already priced in)" if open_count else "")
+        )
 
     def get_portfolio_status(self, current_prices: Dict[str, float] = None) -> Dict:
         """
@@ -3485,4 +3515,3 @@ class PortfolioManager:
             for pos in self.positions.values()
         },
         }
-
