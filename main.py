@@ -5135,13 +5135,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-Bot stopped by user (KeyboardInterrupt)")
-        print("\n[STOPPED] Bot stopped by user.")
-    except Exception as e:
-        logger.exception(f"Fatal error in bot: {e}")
-        print(f"\n[FATAL] Bot crashed: {e}")
-        sys.exit(1)
-
-
-if __name__ == "__main__":
-    main()
