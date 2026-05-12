@@ -1471,9 +1471,14 @@ async function loadClosedTrades() {
         const el = document.getElementById('closed-trades-content');
         if (!d.trades?.length) { el.innerHTML = emptyState('📭','No closed trades yet'); return; }
         let h = '<div style="overflow-x:auto;"><table class="data-table"><thead><tr>';
-        h += '<th>Asset</th><th>Side</th><th>Entry</th><th>Exit</th><th>P&L</th><th>Return %</th><th>Reason</th><th>Closed</th></tr></thead><tbody>';
+        h += '<th>Asset</th><th>Side</th><th>Entry</th><th>Exit</th><th>P&L</th><th>Return %</th><th>Type</th><th>Regime</th><th>Score</th><th>Mode</th><th>Reason</th><th>Closed</th></tr></thead><tbody>';
         d.trades.forEach(t => {
             const pc = t.pnl >= 0 ? 'pos' : 'neg';
+            const tradeType = t.trade_type_label || '—';
+            const regime = t.regime_at_entry || '—';
+            const score = t.council_score != null ? (t.council_score / 5.0 * 100).toFixed(0) + '%' : '—';
+            const scoreColor = t.council_score != null ? (t.council_score >= 3.5 ? 'var(--green)' : t.council_score >= 2.5 ? 'var(--yellow, #f0a500)' : 'var(--red)') : 'var(--muted2)';
+            const mode = t.aggregator_mode ? t.aggregator_mode.toUpperCase() : '—';
             h += `<tr>
                 <td><strong>${t.asset}</strong></td>
                 <td><span class="badge badge-${t.side}">${t.side.toUpperCase()}</span></td>
@@ -1481,6 +1486,10 @@ async function loadClosedTrades() {
                 <td>$${fmt(t.exit_price,  2)}</td>
                 <td class="${pc}">${t.pnl >= 0?'+':'-'}$${fmt(Math.abs(t.pnl),2)}</td>
                 <td class="${pc}">${t.pnl_pct >= 0?'+':''}${(t.pnl_pct||0).toFixed(2)}%</td>
+                <td style="font-size:11px;color:var(--muted2);">${tradeType}</td>
+                <td style="font-size:11px;color:var(--muted2);">${regime}</td>
+                <td style="font-size:11px;color:${scoreColor};font-weight:600;">${score}</td>
+                <td style="font-size:11px;color:var(--muted2);">${mode}</td>
                 <td style="color:var(--muted2);font-size:11px;">${t.exit_reason||'—'}</td>
                 <td>${fmtDate(t.exit_time)}</td>
             </tr>`;

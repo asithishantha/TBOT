@@ -283,9 +283,12 @@ class MTFRegimeIntegration:
             if regime_status.consensus_regime == "NEUTRAL":
                 volatility = "high" # Neutral often means high uncertainty/chop
 
-            # Allow counter-trend in NEUTRAL (MR best regime: 71% WR, +159% P&L).
-            # Block only in confirmed trending regimes.
-            if regime_status.consensus_regime == "NEUTRAL":
+            # Allow counter-trend in NEUTRAL and SLIGHTLY regimes.
+            # SLIGHTLY = 50% confidence (coin flip) — not strong enough to block
+            # MR trades.  Only hard BULLISH / BEARISH (100% confidence) blocks.
+            if regime_status.consensus_regime in (
+                "NEUTRAL", "SLIGHTLY_BULLISH", "SLIGHTLY_BEARISH"
+            ):
                 allow_counter_trend = True
             else:
                 allow_counter_trend = False

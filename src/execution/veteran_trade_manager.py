@@ -166,6 +166,23 @@ def calculate_hybrid_targets(
                 targets.append(rr_target)
                 logger.info(f"  → TP{i+1}: ${rr_target:,.2f} ({r_multiple:.1f}R)")
 
+    # ✅ M-3 FIX: Deduplicate targets that snapped to the same structure level.
+    # When TP2 and TP3 both land on the nearest swing, 55% of the position
+    # exits at the same price and the runner is never activated.
+    if len(targets) > 1:
+        seen_keys: set = set()
+        unique_targets = []
+        for _t in targets:
+            _key = round(_t, 2)
+            if _key not in seen_keys:
+                seen_keys.add(_key)
+                unique_targets.append(_t)
+        if len(unique_targets) < len(targets):
+            logger.info(
+                f"  ℹ️  Deduplicated {len(targets) - len(unique_targets)} duplicate TP(s)"
+            )
+        targets = unique_targets
+
     if len(targets) < len(partial_sizes):
         logger.warning(f"  ⚠️  Only {len(targets)} targets (expected {len(partial_sizes)})")
         remaining = sum(partial_sizes[len(targets):])
@@ -1197,12 +1214,14 @@ class VeteranTradeManager:
         next_target_idx = len(self.partials_hit)
         next_target = self.take_profit_levels[next_target_idx] if next_target_idx < len(self.take_profit_levels) else None
         
-        # Directional distance — always positive = "buffer remaining before level"
+        # Directional distance — always negative = risk / downside remaining to SL
+        # LONG: SL is below current → negative value (price must fall to hit SL)
+        # SHORT: SL is above current → negative value (price must rise to hit SL)
         if self.current_stop_loss > 0:
             if self.side == "long":
-                distance_to_sl_pct = (current_price - self.current_stop_loss) / self.current_stop_loss * 100
+                distance_to_sl_pct = (self.current_stop_loss - current_price) / current_price * 100
             else:
-                distance_to_sl_pct = (self.current_stop_loss - current_price) / self.current_stop_loss * 100
+                distance_to_sl_pct = (current_price - self.current_stop_loss) / current_price * 100
         else:
             distance_to_sl_pct = 0
 
@@ -1395,8 +1414,18 @@ class VeteranTradeManager:
             if i not in self.partials_hit
         ]
 
+        # Empty list: position has no TP at all (e.g. min-lot with partials cleared).
+        # Instead of refusing, append the new price as the single exit target.
         if not remaining_indices:
-            return f"⚠️ No remaining TP levels to override for {self.asset}."
+            self.take_profit_levels = [new_tp]
+            logger.info(
+                f"[VTM] 🖊️ Manual TP added (was empty): {self.asset} {self.side.upper()} "
+                f"→ {new_tp:.5f}"
+            )
+            return (
+                f"✅ TP set to {new_tp:.5f} for {self.asset} {self.side.upper()}\n"
+                f"(Position had no TP — added as single full-exit target)"
+            )
 
         if target_index >= len(remaining_indices):
             target_index = 0  # fall back to nearest

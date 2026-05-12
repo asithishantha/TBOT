@@ -1147,10 +1147,15 @@ class TradingTelegramBot:
 
                     msg += f"{side_emoji} <b>{position.asset} {vtm_status['side'].upper()}</b>\n"
                     msg += f"{pnl_emoji} P&L: {pnl_string}\n"
-                    msg += f"💵 Entry: ${vtm_status['entry_price']:,.2f}\n"
-                    msg += f"📍 Current: ${vtm_status['current_price']:,.2f}\n"
-                    msg += f"🛑 SL: ${vtm_status['stop_loss']:,.2f} ({vtm_status['distance_to_sl_pct']:+.2f}%)\n"
-                    msg += f"🎯 TP: ${vtm_status.get('take_profit', 0):,.2f} ({vtm_status['distance_to_tp_pct']:+.2f}%)\n"
+                    msg += f"💵 Entry: ${(vtm_status.get('entry_price') or 0.0):,.2f}\n"
+                    msg += f"📍 Current: ${(vtm_status.get('current_price') or 0.0):,.2f}\n"
+                    _sl_price = vtm_status.get('stop_loss') or 0.0
+                    _sl_dist  = vtm_status.get('distance_to_sl_pct') or 0.0
+                    msg += f"🛑 SL: ${_sl_price:,.2f} ({_sl_dist:+.2f}%)\n"
+                    _tp_price = vtm_status.get('take_profit') or 0.0
+                    _tp_dist  = vtm_status.get('distance_to_tp_pct') or 0.0
+                    _tp_label = f"${_tp_price:,.2f} ({_tp_dist:+.2f}%)" if _tp_price else "none set"
+                    msg += f"🎯 TP: {_tp_label}\n"
                     msg += f"{lock_emoji} Profit Lock: {'ON' if vtm_status['profit_locked'] else 'OFF'}\n"
                     
                     # Display dynamic VTM parameters
@@ -1741,28 +1746,43 @@ class TradingTelegramBot:
                 results = await asyncio.to_thread(_close_all_asset)
 
                 if not results:
+                    # Tracked positions existed but every close attempt failed
                     await status_msg.edit_text(
-                        f"ℹ️ No open positions found for {asset}, or all close attempts failed.\n\n"
-                        f"If positions exist but couldn't be closed, check if market is open.",
+                        f"❌ *Failed to close {asset} positions*\n\n"
+                        f"Possible reasons:\n"
+                        f"• Market is currently closed\n"
+                        f"• Exchange connection issue\n\n"
+                        f"Check the bot logs for details.",
+                        parse_mode=ParseMode.MARKDOWN,
+                    )
+                elif results and results[0].get("already_closed"):
+                    # Sentinel: position was gone before this command ran
+                    await status_msg.edit_text(
+                        f"ℹ️ *{asset} position already closed*\n\n"
+                        f"No open positions were found in the bot's tracker or on the exchange.\n"
+                        f"The position was likely closed manually or by a stop-loss.",
                         parse_mode=ParseMode.MARKDOWN,
                     )
                 else:
-                    total_pnl = sum(r["pnl"] for r in results)
+                    # Filter out sentinel entries before summing P&L
+                    real_results = [r for r in results if not r.get("already_closed")]
+                    total_pnl = sum(r["pnl"] for r in real_results)
                     pnl_icon = "🟢" if total_pnl >= 0 else "🔴"
 
                     msg = f"✅ *Closed ALL {asset} Positions*\n\n"
-                    msg += f"Trades Closed: {len(results)}\n"
+                    msg += f"Trades Closed: {len(real_results)}\n"
                     msg += f"{pnl_icon} Total P&L: ${total_pnl:,.2f}\n\n"
 
-                    for i, result in enumerate(results[:5], 1):
+                    for i, result in enumerate(real_results[:5], 1):
                         pnl = result["pnl"]
-                        pnl_pct = result["pnl_pct"] * 100
-                        side = result["side"].upper()
+                        pnl_pct = result.get("pnl_pct", 0.0) * 100
+                        side = result.get("side", "?").upper()
+                        orphan = " *(manual position)*" if result.get("orphan_close") else ""
                         icon = "🟢" if pnl >= 0 else "🔴"
-                        msg += f"{icon} #{i} {side}: ${pnl:,.2f} ({pnl_pct:+.2f}%)\n"
+                        msg += f"{icon} #{i} {side}: ${pnl:,.2f} ({pnl_pct:+.2f}%){orphan}\n"
 
-                    if len(results) > 5:
-                        msg += f"\n... and {len(results) - 5} more"
+                    if len(real_results) > 5:
+                        msg += f"\n... and {len(real_results) - 5} more"
 
                     await status_msg.edit_text(msg, parse_mode=ParseMode.MARKDOWN)
 
@@ -3540,14 +3560,14 @@ class TradingTelegramBot:
 
         # Signal icon
         if signal == 1:
-            signal_icon = "🟢 BUY"
+            signal_icon = "\U0001f7e2 BUY"
         elif signal == -1:
-            signal_icon = "🔴 SELL"
+            signal_icon = "\U0001f534 SELL"
         else:
-            signal_icon = "⚪ HOLD"
+            signal_icon = "\u26aa HOLD"
 
         # Quality indicator
-        quality_icon = "★" if quality >= 0.65 else "•"
+        quality_icon = "\u2605" if quality >= 0.65 else "\u2022"
 
         entry = (
             f"  {timestamp} | {signal_icon} | ${price:,.2f}\n"

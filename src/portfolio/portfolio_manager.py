@@ -73,6 +73,7 @@ class Position:
         self.closing = False
         self.min_lot = min_lot
         self.lot_precision = lot_precision
+        self.disable_partials = disable_partials
 
         self.stop_loss = None
         self.take_profit = None
@@ -180,6 +181,27 @@ class Position:
 
                 # ✅ Sync VTM's calculated levels back to the Position object
                 if self.trade_manager:
+                    # ✅ H-2 FIX: Min-lot positions (0.01 lot) cannot support
+                    # partial exits — the fractional lot rounds to 0.  Suppress
+                    # all TP tiers so VTM exits the full position via SL/trail
+                    # only, rather than force-closing 100% at TP1 every time.
+                    if self.disable_partials:
+                        # Keep the last (most conservative/furthest) TP as a
+                        # single full-exit target — partial sizes are wiped so
+                        # the position exits 100% at that level instead of in
+                        # fractions that would round to zero on a 0.01-lot trade.
+                        _all_tps = self.trade_manager.take_profit_levels
+                        if _all_tps:
+                            self.trade_manager.take_profit_levels = [_all_tps[-1]]
+                        else:
+                            self.trade_manager.take_profit_levels = []
+                        self.trade_manager.partial_sizes = []
+                        logger.info(
+                            f"[VTM] ⚠️ Partials disabled for {asset} (min-lot position) "
+                            f"— single full-exit TP set to "
+                            f"{f'${_all_tps[-1]:,.5f}' if _all_tps else 'none'}"
+                        )
+
                     self.stop_loss = self.trade_manager.initial_stop_loss
                     if self.trade_manager.take_profit_levels:
                         self.take_profit = self.trade_manager.take_profit_levels[0]
@@ -396,6 +418,35 @@ class Position:
                 "runner_active": levels["runner_active"],
                 "update_count": levels["update_count"],
                 "last_update": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                # Runner trail / early-lock dynamics
+                "runner_trail_atr_multiplier": getattr(self.trade_manager, "runner_trail_atr_multiplier", None),
+                "early_lock_atr_multiplier":   getattr(self.trade_manager, "early_lock_atr_multiplier", None),
+                "current_early_lock_threshold_pct": (
+                    # early_lock fires when profit > early_lock_atr_multiplier × ATR
+                    # Express as % of entry so the display is meaningful
+                    (getattr(self.trade_manager, "early_lock_atr_multiplier", 0.5)
+                     * self.trade_manager._calculate_atr()
+                     / self.entry_price)
+                    if self.entry_price > 0 else 0.0
+                ),
+                "current_runner_trail_pct": (
+                    # Actual trail width = gap between extreme price and current SL as % of current price
+                    abs(
+                        (self.trade_manager.highest_price_reached - self.trade_manager.current_stop_loss)
+                        / current_price
+                    ) if (
+                        getattr(self.trade_manager, "runner_activated", False)
+                        and self.side == "long"
+                        and self.trade_manager.highest_price_reached > 0
+                    ) else abs(
+                        (self.trade_manager.current_stop_loss - self.trade_manager.lowest_price_reached)
+                        / current_price
+                    ) if (
+                        getattr(self.trade_manager, "runner_activated", False)
+                        and self.side == "short"
+                        and self.trade_manager.lowest_price_reached > 0
+                    ) else 0.0
+                ),
             }
         except Exception as e:
             logger.error(f"Error getting VTM status: {e}")
@@ -744,22 +795,97 @@ class PortfolioManager:
             usdjpy_rate = None
             try:
                 if self.mt5_handler:
-                    # Try broker-suffixed symbol first, then plain
                     for sym in ("USDJPYm", "USDJPY"):
                         price = self.mt5_handler.get_current_price(sym)
-                        if price and price > 50:   # sanity: USDJPY is always > 50
+                        if price and price > 50:
                             usdjpy_rate = price
                             break
             except Exception:
                 pass
 
             if not usdjpy_rate:
-                usdjpy_rate = 155.0   # fallback approximate rate
+                usdjpy_rate = 155.0
                 logger.debug("[CURRENCY] USDJPY rate unavailable — using fallback 155.0")
 
             self._usdjpy_cache = (usdjpy_rate, now)
             logger.debug(f"[CURRENCY] USDJPY rate: {usdjpy_rate:.3f} → conversion factor {1/usdjpy_rate:.6f}")
             return 1.0 / usdjpy_rate
+
+        # AUD-quoted: need AUDUSD rate  (e.g. GBPAUD, EURAUD — price is in AUD)
+        if base.endswith("AUD"):
+            now = datetime.now()
+            cached_rate, cached_ts = getattr(self, "_audusd_cache", (None, None))
+            if cached_rate and cached_ts and (now - cached_ts).total_seconds() < 300:
+                return cached_rate
+
+            audusd_rate = None
+            try:
+                if self.mt5_handler:
+                    for sym in ("AUDUSDm", "AUDUSD"):
+                        price = self.mt5_handler.get_current_price(sym)
+                        if price and 0.4 < price < 1.2:   # sanity: AUDUSD ~0.6–0.7
+                            audusd_rate = price
+                            break
+            except Exception:
+                pass
+
+            if not audusd_rate:
+                audusd_rate = 0.65   # fallback approximate rate
+                logger.debug("[CURRENCY] AUDUSD rate unavailable — using fallback 0.65")
+
+            self._audusd_cache = (audusd_rate, now)
+            logger.debug(f"[CURRENCY] AUDUSD rate: {audusd_rate:.5f} → conversion factor {audusd_rate:.6f}")
+            return audusd_rate
+
+        # CAD-quoted: need 1/USDCAD
+        if base.endswith("CAD"):
+            now = datetime.now()
+            cached_rate, cached_ts = getattr(self, "_usdcad_cache", (None, None))
+            if cached_rate and cached_ts and (now - cached_ts).total_seconds() < 300:
+                return 1.0 / cached_rate
+
+            usdcad_rate = None
+            try:
+                if self.mt5_handler:
+                    for sym in ("USDCADm", "USDCAD"):
+                        price = self.mt5_handler.get_current_price(sym)
+                        if price and 1.0 < price < 1.8:
+                            usdcad_rate = price
+                            break
+            except Exception:
+                pass
+
+            if not usdcad_rate:
+                usdcad_rate = 1.36
+                logger.debug("[CURRENCY] USDCAD rate unavailable — using fallback 1.36")
+
+            self._usdcad_cache = (usdcad_rate, now)
+            return 1.0 / usdcad_rate
+
+        # CHF-quoted: need 1/USDCHF
+        if base.endswith("CHF"):
+            now = datetime.now()
+            cached_rate, cached_ts = getattr(self, "_usdchf_cache", (None, None))
+            if cached_rate and cached_ts and (now - cached_ts).total_seconds() < 300:
+                return 1.0 / cached_rate
+
+            usdchf_rate = None
+            try:
+                if self.mt5_handler:
+                    for sym in ("USDCHFm", "USDCHF"):
+                        price = self.mt5_handler.get_current_price(sym)
+                        if price and 0.7 < price < 1.3:
+                            usdchf_rate = price
+                            break
+            except Exception:
+                pass
+
+            if not usdchf_rate:
+                usdchf_rate = 0.90
+                logger.debug("[CURRENCY] USDCHF rate unavailable — using fallback 0.90")
+
+            self._usdchf_cache = (usdchf_rate, now)
+            return 1.0 / usdchf_rate
 
         # Unknown quote currency — assume USD (safe default, logs a warning)
         logger.warning(f"[CURRENCY] Unknown quote currency for symbol '{symbol}' — assuming USD")
@@ -2232,8 +2358,16 @@ class PortfolioManager:
         self, asset: str, exit_price: float = None, reason: str = "manual_close_asset"
     ) -> List[Dict]:
         """
-        ✅ NEW: Close ALL open positions for a specific asset (e.g., BTC)
-        Used by Telegram 'Close BTC' buttons to ensure total exit.
+        Close ALL open positions for a specific asset (e.g., "GOLD").
+        Used by Telegram /close commands.
+
+        Strategy:
+          1. Close any internally-tracked positions via the normal pipeline.
+          2. If nothing is tracked, fall back to scanning the exchange directly
+             for orphaned positions (e.g. opened/closed manually on MT5 terminal).
+          3. Returns a sentinel {"already_closed": True} entry in the list when
+             the position no longer exists on either system — so callers can
+             distinguish "already closed" from "failed to close".
 
         Args:
             asset: Asset name (e.g., "BTC", "GOLD")
@@ -2241,60 +2375,116 @@ class PortfolioManager:
             reason: Close reason
 
         Returns:
-            List of trade results for closed positions
+            List of trade result dicts.  May include {"already_closed": True}
+            to signal that the position was gone before this call.
         """
-        logger.info(f"Closing ALL positions for {asset}...")
+        logger.info(f"[CLOSE-ALL] Closing ALL positions for {asset}...")
 
-        # Find all positions matching the asset
+        # ── Path 1: internally-tracked positions ────────────────────────────
         positions_to_close = [p for p in self.positions.values() if p.asset == asset]
-
-        if not positions_to_close:
-            logger.warning(f"No positions found for {asset} to close.")
-            return []
 
         results = []
         for pos in positions_to_close:
-            # Determine exit price if not provided
             current_exit_price = exit_price
 
             if current_exit_price is None:
-                # Try to get real-time price from handlers
                 if hasattr(self, "mt5_handler") and pos.mt5_ticket:
                     try:
                         import MetaTrader5 as mt5
-
                         tick = mt5.symbol_info_tick(pos.symbol)
                         if tick:
                             current_exit_price = (tick.ask + tick.bid) / 2
-                    except:
+                    except Exception:
                         pass
 
-                elif hasattr(self, "binance_handler") and pos.binance_order_id:
-                    try:
-                        # Get from binance handler if available
-                        # (you'll need to pass handlers to portfolio manager for this)
-                        pass
-                    except:
-                        pass
-
-                # Fallback to entry price if live price unavailable
                 if current_exit_price is None:
                     current_exit_price = pos.entry_price
 
-            # Close the individual position
             result = self.close_position(
                 position_id=pos.position_id,
                 exit_price=current_exit_price,
                 reason=reason,
             )
-
             if result:
                 results.append(result)
 
-        logger.info(
-            f"Successfully closed {len(results)}/{len(positions_to_close)} positions for {asset}"
-        )
-        return results
+        if results:
+            logger.info(
+                f"[CLOSE-ALL] Closed {len(results)}/{len(positions_to_close)} "
+                f"tracked positions for {asset}"
+            )
+            return results
+
+        # ── Path 2: nothing tracked — scan exchange for orphans ─────────────
+        asset_cfg = self.config.get("assets", {}).get(asset, {})
+        exchange = asset_cfg.get("exchange", "binance")
+        symbol = asset_cfg.get("symbol")
+
+        if exchange == "mt5" and symbol and self.mt5_handler and not self.is_paper_mode:
+            try:
+                import MetaTrader5 as _mt5
+                live_positions = _mt5.positions_get(symbol=symbol)
+                if live_positions:
+                    logger.info(
+                        f"[CLOSE-ALL] Found {len(live_positions)} orphaned MT5 position(s) "
+                        f"for {asset} ({symbol}) — closing directly"
+                    )
+                    for mt5_pos in live_positions:
+                        ticket = mt5_pos.ticket
+                        side = "long" if mt5_pos.type == _mt5.POSITION_TYPE_BUY else "short"
+                        close_result = self.mt5_handler._close_mt5_order(ticket, asset, side)
+                        if close_result:
+                            pnl = float(getattr(mt5_pos, "profit", 0.0) or 0.0)
+                            fill_price = (
+                                close_result.get("fill_price")
+                                if isinstance(close_result, dict)
+                                else mt5_pos.price_current
+                            )
+                            results.append({
+                                "asset": asset,
+                                "side": side,
+                                "entry_price": mt5_pos.price_open,
+                                "exit_price": fill_price or mt5_pos.price_current,
+                                "quantity": mt5_pos.volume,
+                                "pnl": (
+                                    close_result.get("profit", pnl)
+                                    if isinstance(close_result, dict)
+                                    else pnl
+                                ),
+                                "pnl_pct": 0.0,
+                                "mt5_ticket": ticket,
+                                "reason": reason,
+                                "orphan_close": True,
+                            })
+                            logger.info(
+                                f"[CLOSE-ALL] ✅ Orphan MT5 ticket #{ticket} closed "
+                                f"(side={side}, pnl=${pnl:,.2f})"
+                            )
+                        else:
+                            logger.error(
+                                f"[CLOSE-ALL] ❌ Failed to close orphan MT5 ticket #{ticket}"
+                            )
+                    if results:
+                        return results
+                else:
+                    # Nothing on the exchange either — position is already gone
+                    logger.info(
+                        f"[CLOSE-ALL] No open positions on MT5 for {asset} ({symbol}). "
+                        f"Position was already closed externally."
+                    )
+                    return [{"already_closed": True, "asset": asset}]
+
+            except Exception as e:
+                logger.error(f"[CLOSE-ALL] MT5 orphan-scan failed for {asset}: {e}")
+
+        # Nothing tracked, exchange scan not applicable or failed
+        if not positions_to_close:
+            logger.warning(f"[CLOSE-ALL] No tracked positions for {asset}. "
+                           f"Position may already be closed.")
+            return [{"already_closed": True, "asset": asset}]
+
+        logger.warning(f"[CLOSE-ALL] {len(positions_to_close)} tracked but 0 successfully closed for {asset}")
+        return []
 
     def partial_close_position(
         self,
@@ -2663,8 +2853,16 @@ class PortfolioManager:
         # ✨ MEMORY MANAGEMENT: Limit to 100 entries
         if len(self.closed_positions) > 100:
             self.closed_positions.pop(0)
-            
-        del self.positions[position_id]
+
+        # ✅ RACE-CONDITION GUARD: reconciliation loop may have already removed
+        # this key from self.positions (broker reported 0 positions before we
+        # reached this line).  Use pop() instead of del so a KeyError never
+        # fires after a successful exchange close.
+        if self.positions.pop(position_id, None) is None:
+            logger.debug(
+                f"[CLOSE] {position_id} already removed from portfolio by "
+                f"reconciliation — exchange close still completed successfully."
+            )
 
         remaining_count = self.get_asset_position_count(position.asset, position.side)
 
@@ -3234,8 +3432,16 @@ class PortfolioManager:
         # ✨ MEMORY MANAGEMENT: Limit to 100 entries
         if len(self.closed_positions) > 100:
             self.closed_positions.pop(0)
-            
-        del self.positions[position_id]
+
+        # ✅ RACE-CONDITION GUARD: reconciliation loop may have already removed
+        # this key from self.positions (broker reported 0 positions before we
+        # reached this line).  Use pop() instead of del so a KeyError never
+        # fires after a successful exchange close.
+        if self.positions.pop(position_id, None) is None:
+            logger.debug(
+                f"[CLOSE] {position_id} already removed from portfolio by "
+                f"reconciliation — exchange close still completed successfully."
+            )
 
         remaining_count = self.get_asset_position_count(position.asset, position.side)
 
@@ -3426,9 +3632,9 @@ class PortfolioManager:
 
     def get_portfolio_status(self, current_prices: Dict[str, float] = None) -> Dict:
         """
-        ✅ FIX: Auto-refresh balances when getting status
+        \u2705 FIX: Auto-refresh balances when getting status
         """
-        # ✅ Refresh if stale (respects time interval)
+        # \u2705 Refresh if stale (respects time interval)
         self.refresh_capital(force=False)
 
         if current_prices is None:
@@ -3442,7 +3648,7 @@ class PortfolioManager:
         total_notional_value = 0.0
         total_margin_used = 0.0
 
-        # ✅  Count positions per asset correctly
+        # \u2705  Count positions per asset correctly
         asset_position_counts = {}
         asset_positions_detail = {}
 
@@ -3450,7 +3656,6 @@ class PortfolioManager:
         enabled_assets = [a for a, cfg in self.config["assets"].items() if cfg.get("enabled", False)]
 
         for asset in enabled_assets:
-            # Get all positions for this asset
             long_positions = [
                 p
                 for p in self.positions.values()
@@ -3468,7 +3673,6 @@ class PortfolioManager:
                 "total": len(long_positions) + len(short_positions),
             }
 
-            # Detailed info for debugging
             asset_positions_detail[asset] = {
                 "long_ids": [p.position_id for p in long_positions],
                 "short_ids": [p.position_id for p in short_positions],

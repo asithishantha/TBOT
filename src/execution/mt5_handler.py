@@ -571,8 +571,24 @@ class MT5ExecutionHandler:
                     )
                     # Use min lot directly; downstream code will pick this up.
                     forced_lots = symbol_info.volume_min
-                    position_size_usd = (
-                        forced_lots * current_price * symbol_info.trade_contract_size
+                    # ✅ H-2 FIX: At min lot, partial exits round to 0 lots and
+                    # exit the full position at TP1 — TP2/TP3 are dead.  Disable
+                    # partials so VTM uses single-exit mode instead.
+                    _min_lot_val = symbol_info.volume_min if symbol_info else 0.01
+                    _disable_partials = forced_lots <= _min_lot_val * 1.5
+                    _contract_size  = symbol_info.trade_contract_size
+                    _notional_quote = forced_lots * current_price * _contract_size
+                    # ✅ C-1 FIX: Store margin (notional / leverage) not raw
+                    # notional so portfolio_manager risk checks are meaningful.
+                    # Note: _notional_quote is in the symbol's quote currency
+                    # (JPY for EURJPY etc.); portfolio_manager._get_quote_to_usd_rate()
+                    # handles the final currency conversion on the display side.
+                    _leverage = self.config.get("assets", {}).get(
+                        asset, {}
+                    ).get("leverage", 100)
+                    position_size_usd = max(
+                        _notional_quote / _leverage,
+                        forced_lots * current_price * 0.01,
                     )
                     risk_amount_usd = position_size_usd  # for log clarity
                     stop_distance = abs(current_price - initial_stop)
@@ -582,6 +598,7 @@ class MT5ExecutionHandler:
                     signal_details["small_account_protocol_active"] = True
                     signal_details["forced_min_lot"] = True
                 else:
+                    _disable_partials = False  # normal sizing — partials active
                     risk_amount_usd = account_balance * risk_pct
                     stop_distance = abs(current_price - initial_stop)
                     stop_distance_pct = stop_distance / current_price
@@ -777,7 +794,8 @@ class MT5ExecutionHandler:
                 signal_details=signal_details,
                 vtm_overrides=vtm_overrides,
                 min_lot=symbol_info.volume_min,
-                lot_precision=lot_precision
+                lot_precision=lot_precision,
+                disable_partials=_disable_partials,
             )
 
             if success:

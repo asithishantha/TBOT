@@ -749,7 +749,15 @@ Adds Governor + Volatility + Sniper checks to existing aggregator
         # the second parameter of _build_composite_state.
         state._transition_evidence = None
         _regime_name = governor_data.get("consensus_regime", "UNKNOWN") if governor_data else "UNKNOWN"
-        if _regime_name in ("SLIGHTLY_BEARISH", "SLIGHTLY_BULLISH"):
+        # ✅ M-4 FIX: Also fire transition detector for NEUTRAL+TRANSITION path.
+        # EURJPY / EURUSD are often NEUTRAL regime but reach the TRANSITION
+        # branch via the Governor. Without this flag they never get transition
+        # evidence scoring, wasting the detector entirely for those assets.
+        _is_transition_trade = (
+            governor_data.get("trade_type", "") == "TRANSITION"
+            if governor_data else False
+        )
+        if _regime_name in ("SLIGHTLY_BEARISH", "SLIGHTLY_BULLISH") or _is_transition_trade:
             try:
                 _depth = governor_data.get("depth_data") if governor_data else None
                 state._transition_evidence = self._transition_detector.collect_evidence(
@@ -1245,6 +1253,11 @@ Adds Governor + Volatility + Sniper checks to existing aggregator
             f"Net={state.net_conviction:.1f} "
             f"TF={tf_conf:.3f} MR={mr_conf:.3f}"
         )
+
+        # ✅ M-1 FIX: Confluence multipliers (1.10–1.30×) can push confidence
+        # above 1.0, making downstream percentage calculations nonsensical.
+        tf_conf = max(0.0, min(1.0, tf_conf))
+        mr_conf = max(0.0, min(1.0, mr_conf))
 
         return tf_conf, mr_conf, state
 
@@ -2415,51 +2428,6 @@ Adds Governor + Volatility + Sniper checks to existing aggregator
             state = getattr(self, '_cached_composite', None)
 
             # ═══════════════════════════════════════════════════════════════
-            # FLASH VETO — abnormal candle body detection
-            # A candle body > 3× ATR14 signals a news spike / stop-hunt.
-            # Hard-block above 5×; soft-discount (−40% quality) at 3–5×.
-            # ═══════════════════════════════════════════════════════════════
-            _flash_discount = 1.0
-            try:
-                if len(df) >= 15:
-                    import numpy as _fnp
-                    _hi = df["high"].values
-                    _lo = df["low"].values
-                    _cl = df["close"].values
-                    _op = df["open"].values
-                    _tr = _fnp.maximum(
-                        _hi[1:] - _lo[1:],
-                        _fnp.abs(_hi[1:] - _cl[:-1]),
-                        _fnp.abs(_lo[1:] - _cl[:-1]),
-                    )
-                    _atr14 = float(_fnp.nanmean(_tr[-14:])) if len(_tr) >= 14 else 0.0
-                    _last_body = abs(float(_cl[-1]) - float(_op[-1]))
-                    if _atr14 > 0:
-                        _body_ratio = _last_body / _atr14
-                        if _body_ratio > 5.0:
-                            logger.warning(
-                                f"[FLASH] ⛔ Hard-veto: candle body {_body_ratio:.1f}× ATR "
-                                f"— news spike detected, blocking signal"
-                            )
-                            return 0, {
-                                "timestamp": timestamp,
-                                "regime": "UNKNOWN",
-                                "reasoning": f"flash_veto_{_body_ratio:.1f}x_atr",
-                                "final_signal": 0, "signal_quality": 0.0,
-                                "mr_signal": 0, "mr_confidence": 0.0,
-                                "tf_signal": 0, "tf_confidence": 0.0,
-                                "ema_signal": 0, "ema_confidence": 0.0,
-                            }
-                        elif _body_ratio > 3.0:
-                            logger.warning(
-                                f"[FLASH] ⚠️ Soft-veto: candle body {_body_ratio:.1f}× ATR "
-                                f"— quality discounted 40%"
-                            )
-                            _flash_discount = 0.60
-            except Exception:
-                _flash_discount = 1.0
-
-                        # ═══════════════════════════════════════════════════════════════
             # FLASH VETO — abnormal candle body detection
             # Hard-block above 5× ATR14; soft-discount (−40% quality) at 3–5×.
             # ═══════════════════════════════════════════════════════════════

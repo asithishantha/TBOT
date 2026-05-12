@@ -290,11 +290,23 @@ class InstitutionalCouncilAggregator:
             else:
                 # --- TREND GATING (STRICT) ---
                 if (is_bullish and signal == -1) or (is_bearish and signal == 1):
-                    # ✨ NEW: Explosive Momentum Overrule (V-Shape Reversal)
+                    # ✨ Explosive Momentum Overrule (V-Shape Reversal)
                     if self._is_explosive_momentum(df, signal):
                         logger.info(f"[GOV] 🚀 EXPLOSIVE MOMENTUM - Overruling Macro Veto ({regime_name})")
                         return True, "V_SHAPE"
-                    
+
+                    # ✨ SLIGHTLY regimes are ambiguous — soft block instead of hard block.
+                    # Returns SLIGHTLY_COUNTER so the caller raises required_score by +0.5
+                    # (needs ≥4.0) rather than rejecting outright.  Full BEARISH/BULLISH
+                    # counter-trend signals are still hard-blocked below.
+                    if regime_name in ("SLIGHTLY_BEARISH", "SLIGHTLY_BULLISH"):
+                        direction = "Short" if signal == -1 else "Long"
+                        logger.info(
+                            f"[GOV] ⚠️ SLIGHTLY_COUNTER — {direction} in {regime_name}: "
+                            f"allowing at raised score threshold (+0.5)"
+                        )
+                        return True, "SLIGHTLY_COUNTER"
+
                     logger.info(f"[GOV] ❌ BLOCKED - {('Short' if signal == -1 else 'Long')} attempt in Macro {('BULLISH' if is_bullish else 'BEARISH')} regime ({regime_name})")
                     return False, "TREND"
 
@@ -542,27 +554,27 @@ class InstitutionalCouncilAggregator:
         """
         Detects 'V-Shape' or 'Parabolic' price action that overrules macro bias.
         Criteria:
-        1. ADX > 30 (Strong immediate trend)
-        2. Velocity: Last 6 bars move > 2.0 * ATR14
+        1. ADX > 22 (Meaningful trend — lowered from 30 to catch geopolitical/supply-shock moves)
+        2. Velocity: Last 6 bars move > 1.5 * ATR14 (lowered from 2.0 to be less restrictive)
         3. Alignment: Price > EMA20 > EMA50 (for Longs)
         """
         try:
             if len(df) < 50: return False
-            
+
             close = df['close'].values
             high = df['high'].values
             low = df['low'].values
-            
-            # 1. Trend Strength
+
+            # 1. Trend Strength (22 catches strong momentum without requiring parabolic ADX)
             adx = ta.ADX(high, low, close, timeperiod=14)[-1]
-            if adx < 30: return False
-            
-            # 2. ATR-Scaled Velocity
+            if adx < 22: return False
+
+            # 2. ATR-Scaled Velocity (1.5x ATR over last 6 bars)
             atr = ta.ATR(high, low, close, timeperiod=14)[-1]
             move = close[-1] - close[-6]
             velocity_ratio = abs(move) / (atr if atr > 0 else 1)
-            
-            if velocity_ratio < 2.0: return False
+
+            if velocity_ratio < 1.5: return False
             
             # 3. Local Alignment
             ema20 = ta.EMA(close, timeperiod=20)[-1]
@@ -1112,6 +1124,12 @@ class InstitutionalCouncilAggregator:
                         trade_type = "TREND"  # Restore for downstream R/R gates
                         required_score = min(required_score + 0.75, 4.5)
                         logger.info(f"[GOV] 🔄 TRANSITION: Neutral market — required score raised to {required_score:.2f}")
+
+                    # SLIGHTLY_COUNTER — ambiguous regime counter-trend, raise required_score
+                    elif trade_type == "SLIGHTLY_COUNTER":
+                        trade_type = "TREND"  # Restore for downstream gates
+                        required_score = min(required_score + 0.50, 4.0)
+                        logger.info(f"[GOV] ⚠️ SLIGHTLY_COUNTER: required score raised to {required_score:.2f}")
 
                 # 2. ATR WICK TRAP (ABSOLUTE VETO) — T2.3: pass regime context
                 # Fix #16 (council): Neutral regime SHORT bias — when is_bull=False and regime is NEUTRAL,
@@ -2214,7 +2232,6 @@ class InstitutionalCouncilAggregator:
                     reasons.append("No pattern detected")
                 if viz_data["pattern_confidence"] < self.ai_validator.current_pattern_threshold:
                     reasons.append(f"Low confidence ({viz_data['pattern_confidence']:.1%})")
-                
                 viz_data["rejection_reasons"] = reasons
             elif final_signal != 0:
                 viz_data["validation_passed"] = True
@@ -2232,22 +2249,22 @@ class InstitutionalCouncilAggregator:
                 "error": str(e),
                 "action": "error",
             }
-    
+
     def get_statistics(self) -> Dict:
         """Return aggregator statistics"""
         total = max(self.stats['total_evaluations'], 1)
-        
+
         return {
             **self.stats,
             'buy_rate': (self.stats['buy_signals'] / total) * 100,
             'sell_rate': (self.stats['sell_signals'] / total) * 100,
             'hold_rate': (self.stats['hold_signals'] / total) * 100,
             'avg_score_on_trade': (
-                np.mean(self.stats['avg_score_on_trade']) 
+                np.mean(self.stats['avg_score_on_trade'])
                 if self.stats['avg_score_on_trade'] else 0.0
             ),
             'avg_score_on_hold': (
-                np.mean(self.stats['avg_score_on_hold']) 
+                np.mean(self.stats['avg_score_on_hold'])
                 if self.stats['avg_score_on_hold'] else 0.0
             ),
         }

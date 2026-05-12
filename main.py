@@ -297,6 +297,9 @@ class TradingBot:
         self._log_all_signals = _db_cfg.get("log_all_signals", True)
         self._log_system_events = _db_cfg.get("log_system_events", True)
         self._df_4h_cache = {}
+        # Tracks last bar timestamp seen per asset — prevents on_new_bar() being
+        # called multiple times within the same 1H candle (5-min cycle cadence).
+        self._last_vtm_bar_ts: dict = {}
 
         # T3.5: BTC funding rate Z-score state (fetched every 8 hours)
         self.current_funding_rate = 0.0
@@ -2320,6 +2323,20 @@ class TradingBot:
             preset_config = AGGREGATOR_PRESETS.get(_preset_key, {}).get(preset)
             asset_type = asset_name  # Pass actual asset name to aggregator
 
+            # ✅ H-3 FIX: Map selector output names → aggregator preset names.
+            # auto_preset_selector returns "mr"/"scalping"/"trending"/"ranging"
+            # but AGGREGATOR_PRESETS only has keys "conservative"/"scalper"/
+            # "aggressive" — without this map, ranging-market reinit silently
+            # fails every single cycle.
+            _REINIT_PRESET_MAP = {
+                "mr":       "conservative",
+                "scalping": "scalper",
+                "trending": "aggressive",
+                "ranging":  "conservative",
+            }
+            preset = _REINIT_PRESET_MAP.get(preset, preset)
+            preset_config = AGGREGATOR_PRESETS.get(_preset_key, {}).get(preset)
+
             if not preset_config:
                 logger.error(f"[AUTO PRESET] No config for {asset_name} {preset}")
                 return
@@ -2718,11 +2735,28 @@ class TradingBot:
 
                                 if len(df) > 0:
                                     latest = df.iloc[-1]
-                                    ohlc_data_dict[asset_name] = {
-                                        "high": latest["high"],
-                                        "low": latest["low"],
-                                        "close": latest["close"],
-                                    }
+                                    # ✅ BAR DEDUP: only feed on_new_bar() once
+                                    # per completed candle.  Calling it every
+                                    # 5-min cycle with the same bar corrupts ATR
+                                    # and inflates bars_in_trade 12× per hour.
+                                    bar_ts = latest.name
+                                    last_seen = self._last_vtm_bar_ts.get(asset_name)
+                                    if last_seen is None or bar_ts != last_seen:
+                                        self._last_vtm_bar_ts[asset_name] = bar_ts
+                                        ohlc_data_dict[asset_name] = {
+                                            "high": latest["high"],
+                                            "low": latest["low"],
+                                            "close": latest["close"],
+                                        }
+                                        logger.debug(
+                                            f"[VTM BAR] New {self.config['assets'][asset_name].get('timeframe','H1')} "
+                                            f"bar for {asset_name}: {bar_ts}"
+                                        )
+                                    else:
+                                        logger.debug(
+                                            f"[VTM BAR] Same bar for {asset_name} "
+                                            f"({bar_ts}) — skipping on_new_bar()"
+                                        )
                             except Exception as e:
                                 logger.debug(
                                     f"[VTM] Failed to fetch OHLC for {asset_name}: {e}"
@@ -2884,23 +2918,48 @@ class TradingBot:
                 # (Common for synced/imported positions or reloads)
                 # --------------------------------------------------------
                 if not position.trade_manager:
-                    # Get 4H data from cache (or try to fetch if not present)
-                    df_4h = self._df_4h_cache.get(asset_name)
-                    
-                    if df_4h is not None and not df_4h.empty:
+                    # ✅ Re-initialize VTM using the CORRECT trading timeframe (1H),
+                    # not 4H regime data.  Mixing timeframes corrupts ATR/ADX.
+                    df_reinit = None
+                    try:
+                        asset_cfg_r = self.config["assets"].get(asset_name, {})
+                        exchange_r  = asset_cfg_r.get("exchange", "mt5")
+                        symbol_r    = asset_cfg_r.get("symbol")
+                        tf_r        = asset_cfg_r.get("timeframe", "H1")
+                        if symbol_r and self.data_manager:
+                            from datetime import datetime as _dtR, timedelta as _tdR, timezone as _tzR
+                            _end_r   = _dtR.now(_tzR.utc)
+                            _start_r = _end_r - _tdR(days=10)
+                            if exchange_r == "binance":
+                                df_reinit = self.data_manager.fetch_binance_data(
+                                    symbol=symbol_r,
+                                    interval=asset_cfg_r.get("interval", "1h"),
+                                    start_date=_start_r.strftime("%Y-%m-%d"),
+                                    end_date=_end_r.strftime("%Y-%m-%d %H:%M:%S"),
+                                )
+                            else:
+                                df_reinit = self.data_manager.fetch_mt5_data(
+                                    symbol=symbol_r, timeframe=tf_r,
+                                    start_date=_start_r.strftime("%Y-%m-%d"),
+                                    end_date=_end_r.strftime("%Y-%m-%d %H:%M:%S"),
+                                )
+                            if df_reinit is not None and len(df_reinit) < 50:
+                                df_reinit = None   # not enough history
+                    except Exception as _e_r:
+                        logger.debug(f"[VTM LOOP] Re-init OHLC fetch failed for {asset_name}: {_e_r}")
+
+                    if df_reinit is not None and not df_reinit.empty:
                         logger.info(f"[VTM LOOP] Attempting to re-initialize missing VTM for {position_id}...")
                         try:
-                            # Use Position object's logic via PortfolioManager helper (if it existed)
-                            # For now, we manually re-initialize if we have OHLC data
                             asset_cfg = self.config["assets"].get(asset_name, {})
                             risk_cfg = asset_cfg.get("risk", {})
-                            
-                            # Prepare ohlc_data for the Position class logic
+
+                            # Prepare ohlc_data using 1H history (same timeframe VTM was born with)
                             ohlc_data = {
-                                "high": df_4h["high"].values,
-                                "low": df_4h["low"].values,
-                                "close": df_4h["close"].values,
-                                "volume": df_4h["volume"].values if "volume" in df_4h else None
+                                "high":   df_reinit["high"].values,
+                                "low":    df_reinit["low"].values,
+                                "close":  df_reinit["close"].values,
+                                "volume": df_reinit["volume"].values if "volume" in df_reinit else None
                             }
                             
                             # We can re-call the initialization logic or just create the VTM here
@@ -3156,20 +3215,32 @@ class TradingBot:
             )
             return False
 
+        # ✅ C-2 FIX: self.daily_loss was never written — circuit breaker was
+        # permanently disabled (always read 0.0).  Compute daily loss live
+        # from session_start_equity vs current equity instead.
         max_daily_loss = risk_cfg.get("max_daily_loss_pct", 0.05)
-        if self.daily_loss >= max_daily_loss:
-            self._last_limit_reason = (
-                f"Daily loss limit reached ({self.daily_loss:.2%} ≥ {max_daily_loss:.2%})"
+        _pm = self.portfolio_manager
+        if (
+            _pm.session_start_equity
+            and _pm.session_start_equity > 0
+            and _pm.equity is not None
+        ):
+            _daily_loss_pct = max(
+                0.0,
+                (_pm.session_start_equity - _pm.equity) / _pm.session_start_equity,
             )
-            logger.warning(f"[LIMIT] Daily loss ({self.daily_loss:.2%})")
+        else:
+            _daily_loss_pct = 0.0
+
+        if _daily_loss_pct >= max_daily_loss:
+            self._last_limit_reason = (
+                f"Daily loss limit reached ({_daily_loss_pct:.2%} ≥ {max_daily_loss:.2%})"
+            )
+            logger.warning(f"[LIMIT] Daily loss ({_daily_loss_pct:.2%})")
             return False
 
         circuit_breaker = risk_cfg.get("circuit_breaker_loss_pct", 0.10)
-        loss_pct = (
-            self.daily_loss / self.portfolio_manager.initial_capital
-            if self.portfolio_manager.initial_capital > 0
-            else 0
-        )
+        loss_pct = _daily_loss_pct
         if loss_pct >= circuit_breaker:
             self._last_limit_reason = (
                 f"Circuit breaker tripped: drawdown {loss_pct:.2%} ≥ {circuit_breaker:.2%}"
