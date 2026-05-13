@@ -2975,6 +2975,11 @@ class TradingBot:
                                 quantity=position.quantity,
                                 signal_details=getattr(position, 'signal_details', {}),
                                 trade_type=getattr(position, 'signal_details', {}).get("trade_type", "TREND"),
+                                # Re-init for an already-open position: accept whatever
+                                # size the live trade has, even if it's below the broker
+                                # minimum (e.g. 0.0029 BTC after partial closes).
+                                # The min-lot guard is only meaningful for NEW orders.
+                                min_lot_override=position.quantity,
                             )
                             logger.info(f"[VTM LOOP] ✅ Successfully re-initialized VTM for {position_id}")
                         except Exception as e:

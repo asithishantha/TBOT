@@ -753,6 +753,10 @@ class PortfolioManager:
                                     quantity=position.quantity,
                                     signal_details=signal_details,
                                     trade_type=signal_details.get("trade_type", "TREND"),
+                                    # Restoring VTM for an already-open position: accept
+                                    # whatever size the live trade actually has, even if it
+                                    # has dipped below broker minimum after partial closes.
+                                    min_lot_override=position.quantity,
                                 )
                                 logger.info(f"[STATE] VTM for {position_id} successfully created.")
                         else:
