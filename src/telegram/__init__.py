@@ -600,7 +600,7 @@ class TradingTelegramBot:
                     # Try to get live price for P&L
                     asset_cfg = self.trading_bot.config["assets"].get(asset, {})
                     exchange  = asset_cfg.get("exchange", "binance")
-                    symbol    = asset_cfg.get("symbol")
+                    symbol    = self.trading_bot._resolve_symbol(asset)
                     handler   = (self.trading_bot.binance_handler if exchange == "binance"
                                  else self.trading_bot.mt5_handler)
                     current = entry
@@ -1025,7 +1025,7 @@ class TradingTelegramBot:
                 # Live price
                 asset_cfg = self.trading_bot.config["assets"].get(asset, {})
                 exchange = asset_cfg.get("exchange", "binance")
-                symbol = asset_cfg.get("symbol")
+                symbol = self.trading_bot._resolve_symbol(asset)
                 handler = (self.trading_bot.binance_handler if exchange == "binance"
                            else self.trading_bot.mt5_handler)
                 current = entry
@@ -1122,7 +1122,7 @@ class TradingTelegramBot:
                 # 1. Get the correct handler for the asset
                 asset_cfg = self.trading_bot.config['assets'].get(position.asset, {})
                 exchange = asset_cfg.get('exchange', 'binance')
-                symbol = asset_cfg.get('symbol')
+                symbol = self.trading_bot._resolve_symbol(position.asset)
                 handler = self.trading_bot.binance_handler if exchange == 'binance' else self.trading_bot.mt5_handler
 
                 # 2. Fetch the live price
@@ -1617,8 +1617,8 @@ class TradingTelegramBot:
                         continue
                     
                     exchange = asset_cfg.get("exchange", "binance")
-                    symbol = asset_cfg.get("symbol")
-                    
+                    symbol = self.trading_bot._resolve_symbol(asset_name)
+
                     handler = (
                         self.trading_bot.binance_handler
                         if exchange == "binance"
@@ -1678,7 +1678,7 @@ class TradingTelegramBot:
             # Check if market is open for this asset
             asset_cfg = self.trading_bot.config["assets"].get(asset, {})
             exchange = asset_cfg.get("exchange", "binance")
-            symbol = asset_cfg.get("symbol")
+            symbol = self.trading_bot._resolve_symbol(asset)
 
             if exchange == "mt5":
                 mt5_handler = self.trading_bot.mt5_handler
@@ -2621,7 +2621,7 @@ class TradingTelegramBot:
             
             asset_cfg = self.trading_bot.config['assets'].get(asset, {})
             exchange = asset_cfg.get('exchange', 'binance')
-            symbol = asset_cfg.get('symbol')
+            symbol = self.trading_bot._resolve_symbol(asset)
             
             handler = (
                 self.trading_bot.binance_handler
@@ -2757,7 +2757,7 @@ class TradingTelegramBot:
                             )
 
                         exchange = self.trading_bot.config["assets"].get(asset_name, {}).get("exchange", "binance")
-                        symbol = self.trading_bot.config["assets"].get(asset_name, {}).get("symbol")
+                        symbol = self.trading_bot._resolve_symbol(asset_name)
                         handler = (
                             self.trading_bot.binance_handler
                             if exchange == "binance"
@@ -3384,7 +3384,7 @@ class TradingTelegramBot:
                     entry = position.entry_price
                     asset_cfg = self.trading_bot.config["assets"].get(asset, {})
                     exchange  = asset_cfg.get("exchange", "binance")
-                    symbol    = asset_cfg.get("symbol")
+                    symbol    = self.trading_bot._resolve_symbol(asset)
                     handler   = (self.trading_bot.binance_handler if exchange == "binance"
                                  else self.trading_bot.mt5_handler)
                     current = entry
@@ -3476,7 +3476,7 @@ class TradingTelegramBot:
 
                 if handler:
                     try:
-                        symbol = asset_cfg.get("symbol")
+                        symbol = self.trading_bot._resolve_symbol(asset_name)
                         price = handler.get_current_price(symbol=symbol)
                         if price and price > 0:
                             current_prices[asset_name] = price

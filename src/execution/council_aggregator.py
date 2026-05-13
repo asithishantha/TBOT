@@ -550,6 +550,118 @@ class InstitutionalCouncilAggregator:
                     if getattr(governor, 'is_bearish', False): return "BEARISH"
         return "NEUTRAL"
 
+    def _check_lifecycle_phase(
+        self,
+        df: pd.DataFrame,
+        signal: int,
+        adx: float,
+        current_required_score: float,
+    ) -> Tuple[float, str]:
+        """
+        Lifecycle / Phase-Awareness Gate
+        ─────────────────────────────────
+        The Council judges score *current conditions* but have no memory of where
+        in the trend cycle the market is.  This method adds that memory.
+
+        Returns (adjusted_required_score, phase_label) where phase_label is one of:
+          • "EXHAUSTED"    — trend is old, ADX declining, price overextended + RSI divergence
+          • "EXTENDED"     — price stretched but no confirmed divergence yet
+          • "ESTABLISHING" — fresh breakout, ADX just crossed 20 and still rising
+          • "HEALTHY"      — normal mid-trend, no adjustment
+
+        Score adjustments (never blocks outright):
+          EXHAUSTED    → required_score += 0.75
+          EXTENDED     → required_score += 0.35
+          ESTABLISHING → required_score -= 0.25  (reward fresh momentum)
+          HEALTHY      → no change
+        """
+        try:
+            if len(df) < 60:
+                return current_required_score, "HEALTHY"
+
+            high   = df["high"].values
+            low    = df["low"].values
+            close  = df["close"].values
+
+            # ── 1. ADX SLOPE: is the trend gaining or losing strength? ────────
+            adx_series = ta.ADX(high, low, close, timeperiod=14)
+            valid_adx  = adx_series[~np.isnan(adx_series)]
+            if len(valid_adx) < 10:
+                return current_required_score, "HEALTHY"
+
+            adx_now    = valid_adx[-1]
+            adx_5ago   = valid_adx[-5]
+            adx_peak   = float(np.max(valid_adx[-20:]))   # rolling 20-bar peak
+            adx_rising = adx_now > adx_5ago               # simple slope check
+
+            # Peak-decline: how far has ADX fallen from its recent high?
+            adx_peak_decline_pct = (adx_peak - adx_now) / adx_peak if adx_peak > 0 else 0.0
+
+            # ── 2. PRICE Z-SCORE: how far is price from its 50-bar mean? ─────
+            close_series = pd.Series(close)
+            mean_50  = close_series.rolling(50).mean().iloc[-1]
+            std_50   = close_series.rolling(50).std().iloc[-1]
+            z_score  = (close[-1] - mean_50) / std_50 if std_50 and std_50 > 0 else 0.0
+            # Directional z-score: positive means price extended in the signal direction
+            directional_z = z_score if signal == 1 else -z_score
+
+            # ── 3. RSI DIVERGENCE: price made new extreme but RSI didn't ─────
+            rsi_series  = ta.RSI(close, timeperiod=14)
+            valid_rsi   = rsi_series[~np.isnan(rsi_series)]
+            rsi_divergence = False
+            if len(valid_rsi) >= 10:
+                rsi_now    = valid_rsi[-1]
+                rsi_5ago   = valid_rsi[-5]
+                price_now  = close[-1]
+                price_5ago = close[-5]
+                # Bearish divergence: price higher but RSI lower (exhaustion on longs)
+                if signal == 1 and price_now > price_5ago and rsi_now < rsi_5ago - 2:
+                    rsi_divergence = True
+                # Bullish divergence: price lower but RSI higher (exhaustion on shorts)
+                elif signal == -1 and price_now < price_5ago and rsi_now > rsi_5ago + 2:
+                    rsi_divergence = True
+
+            # ── 4. CLASSIFY PHASE ─────────────────────────────────────────────
+            # ESTABLISHING: ADX was below 20 recently and is now rising cleanly
+            adx_was_low = float(np.min(valid_adx[-8:-3])) < 20  # dipped below 20 in last 3–8 bars
+            if adx_was_low and adx_rising and adx_now > 20:
+                adj_score = max(current_required_score - 0.25, 2.5)
+                logger.info(
+                    f"[LIFECYCLE] 🌱 ESTABLISHING — ADX just crossed 20 and rising "
+                    f"({adx_now:.1f}). required_score ↓ {current_required_score:.2f} → {adj_score:.2f}"
+                )
+                return adj_score, "ESTABLISHING"
+
+            # EXHAUSTED: ADX declined significantly from peak + price overextended + divergence
+            if (adx_peak_decline_pct >= 0.15          # ADX fell ≥15% from recent peak
+                    and directional_z >= 1.8           # price stretched ≥1.8σ in signal dir
+                    and rsi_divergence):               # confirmed RSI divergence
+                adj_score = min(current_required_score + 0.75, 4.75)
+                logger.info(
+                    f"[LIFECYCLE] 🔴 EXHAUSTED — ADX peak-decline {adx_peak_decline_pct:.0%}, "
+                    f"z-score {directional_z:.2f}σ, RSI divergence confirmed. "
+                    f"required_score ↑ {current_required_score:.2f} → {adj_score:.2f}"
+                )
+                return adj_score, "EXHAUSTED"
+
+            # EXTENDED: price stretched + ADX declining (but no divergence confirmation yet)
+            if (adx_peak_decline_pct >= 0.12
+                    and directional_z >= 1.5
+                    and not adx_rising):
+                adj_score = min(current_required_score + 0.35, 4.5)
+                logger.info(
+                    f"[LIFECYCLE] 🟡 EXTENDED — ADX peak-decline {adx_peak_decline_pct:.0%}, "
+                    f"z-score {directional_z:.2f}σ (no divergence). "
+                    f"required_score ↑ {current_required_score:.2f} → {adj_score:.2f}"
+                )
+                return adj_score, "EXTENDED"
+
+            return current_required_score, "HEALTHY"
+
+        except Exception as e:
+            logger.debug(f"[LIFECYCLE] Phase check error: {e}")
+            return current_required_score, "HEALTHY"
+
     def _is_explosive_momentum(self, df: pd.DataFrame, signal: int) -> bool:
         """
         Detects 'V-Shape' or 'Parabolic' price action that overrules macro bias.
@@ -1001,6 +1113,7 @@ class InstitutionalCouncilAggregator:
             required_score = self.trend_aligned_threshold
             chosen_scores = {}
             decision_type = "HOLD"
+            lifecycle_phase = "HEALTHY"  # Updated by _check_lifecycle_phase when signal != 0
 
             # Determine preliminary trade type from preset
             preset_name = self.config.get('name', 'balanced').lower()
@@ -1468,6 +1581,19 @@ class InstitutionalCouncilAggregator:
                     except Exception as e:
                         logger.warning(f"[DYNAMIC WEIGHT] Failed: {e}")
 
+                # ════════════════════════════════════════════════════════════
+                # LIFECYCLE / PHASE-AWARENESS GATE
+                # Adjusts required_score based on where in the trend cycle the
+                # market is.  ESTABLISHING lowers the bar; EXHAUSTED / EXTENDED
+                # raise it.  Never blocks outright — that's the veto layer's job.
+                # ════════════════════════════════════════════════════════════
+                required_score, lifecycle_phase = self._check_lifecycle_phase(
+                    df=df,
+                    signal=signal,
+                    adx=adx,
+                    current_required_score=required_score,
+                )
+
                 # Final execution check
                 # Quality gate aligned with the council's own score threshold.
                 # Previously 0.65 (requiring total_score ≥ 3.25) which was STRICTER
@@ -1567,6 +1693,7 @@ class InstitutionalCouncilAggregator:
                 'judge_agreement': judge_agreement,
                 'atr_fast': atr_fast,
                 'atr_slow': atr_slow,
+                'lifecycle_phase': lifecycle_phase,
                 'governor_data': governor_data,
                 'viz_overlay': {
                     'divergence': self.divergence_detector.analyze(df) if hasattr(self, 'divergence_detector') else None,

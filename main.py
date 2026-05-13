@@ -3024,11 +3024,19 @@ class TradingBot:
                             sig_details["parent_position_id"] = req["original_position_id"]
                             
                             # Execute the new trade
-                            handler.execute_signal(
+                            pyramid_ok = handler.execute_signal(
                                 signal=pyramid_signal,
                                 asset_name=asset_name,
                                 signal_details=sig_details
                             )
+
+                            # Update main-loop cooldown timer so subsequent signal-based
+                            # trades see the correct last-entry time (not the stale
+                            # original trade time).  Without this, the 8h cooldown still
+                            # measured from the original entry, letting another signal
+                            # trade fire as soon as all positions were manually closed.
+                            if pyramid_ok:
+                                self.last_trade_times[asset_name] = datetime.now()
 
                 except Exception as e:
                     logger.error(f"[VTM LOOP] Error checking {asset_name} (Position: {position_id}): {e}")
@@ -3297,13 +3305,21 @@ class TradingBot:
         if asset_name not in self.last_trade_times:
             return True
 
-        # Bypass cooldown entirely when there are no open positions for the asset.
-        # The cooldown exists to prevent over-trading; with zero exposure there is
-        # nothing to protect and blocking here only causes missed entries.
+        # Bypass cooldown when there are no open positions AND the last close was
+        # natural (VTM / SL / TP hit).  Do NOT bypass after a manual close — the user
+        # explicitly exited and the bot should respect the cooldown before re-entering.
         open_positions = self.portfolio_manager.get_asset_positions(asset_name)
         if not open_positions:
-            logger.debug(f"[COOLDOWN] {asset_name}: no open positions — cooldown bypassed")
-            return True
+            last_was_manual = self.portfolio_manager.last_close_was_manual.get(asset_name, False)
+            if last_was_manual:
+                logger.debug(
+                    f"[COOLDOWN] {asset_name}: no open positions but last close was MANUAL — "
+                    f"cooldown still applies"
+                )
+                # Fall through to the elapsed-time check below
+            else:
+                logger.debug(f"[COOLDOWN] {asset_name}: no open positions (natural close) — cooldown bypassed")
+                return True
 
         elapsed = datetime.now() - self.last_trade_times[asset_name]
         if elapsed.total_seconds() < min_minutes * 60:

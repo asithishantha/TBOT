@@ -584,6 +584,11 @@ class PortfolioManager:
         self.session_start_capital = None
         self.state_file = Path("data/portfolio_state.pkl")
 
+        # Tracks whether the last close per asset was manual (Telegram command / force-close)
+        # vs. natural (VTM, SL, TP).  Used by check_min_time_between_trades() to decide
+        # whether the "no open positions" cooldown bypass should be suppressed.
+        self.last_close_was_manual: Dict[str, bool] = {}
+
         logger.info(f"Portfolio Manager initialized in {self.mode.upper()} mode")
         logger.info(f"Initial Capital: ${self.initial_capital:,.2f}")
 
@@ -597,6 +602,14 @@ class PortfolioManager:
             )
         else:
             logger.info("✓ Using PAPER mode with simulated capital")
+
+    def _resolve_symbol(self, asset_name: str) -> str:
+        """Return the broker-correct symbol for the asset's configured exchange."""
+        cfg = self.config.get("assets", {}).get(asset_name, {})
+        exchange = cfg.get("exchange", "binance")
+        if exchange == "mt5":
+            return cfg.get("mt5_symbol") or cfg.get("symbol", asset_name)
+        return cfg.get("binance_symbol") or cfg.get("symbol", asset_name)
 
     def save_portfolio_state(self):
         """Saves the current open positions to a file atomically."""
@@ -2104,6 +2117,12 @@ class PortfolioManager:
                 logger.info(
                     f"[VTM] Initialized for {asset}. SL: ${position.stop_loss:,.2f}"
                 )
+                # Pyramid scale-in positions must not pyramid themselves again — the
+                # entry price is already inside a running trend, so profit >= 1 ATR
+                # can be true almost immediately, causing a cascade of new positions.
+                if signal_details and signal_details.get("is_pyramid_scale_in"):
+                    position.trade_manager.has_pyramided = True
+                    logger.info(f"[VTM] Pyramid scale-in — has_pyramided locked True for {asset}")
             else:
                 logger.warning(f"[VTM] Failed to initialize for {asset}")
 
@@ -2434,7 +2453,7 @@ class PortfolioManager:
         # ── Path 2: nothing tracked — scan exchange for orphans ─────────────
         asset_cfg = self.config.get("assets", {}).get(asset, {})
         exchange = asset_cfg.get("exchange", "binance")
-        symbol = asset_cfg.get("symbol")
+        symbol = self._resolve_symbol(asset)
 
         if exchange == "mt5" and symbol and self.mt5_handler and not self.is_paper_mode:
             try:
@@ -2879,6 +2898,12 @@ class PortfolioManager:
                 f"[CLOSE] {position_id} already removed from portfolio by "
                 f"reconciliation — exchange close still completed successfully."
             )
+
+        # Track whether this close was manual (Telegram / force-close) so the
+        # cooldown bypass in check_min_time_between_trades() works correctly.
+        _reason_str = str(reason).lower()
+        _is_manual = any(k in _reason_str for k in ("manual", "telegram", "force", "user"))
+        self.last_close_was_manual[position.asset] = _is_manual
 
         remaining_count = self.get_asset_position_count(position.asset, position.side)
 
@@ -3469,6 +3494,12 @@ class PortfolioManager:
                 f"[CLOSE] {position_id} already removed from portfolio by "
                 f"reconciliation — exchange close still completed successfully."
             )
+
+        # Track whether this close was manual (Telegram / force-close) so the
+        # cooldown bypass in check_min_time_between_trades() works correctly.
+        _reason_str = str(reason).lower()
+        _is_manual = any(k in _reason_str for k in ("manual", "telegram", "force", "user"))
+        self.last_close_was_manual[position.asset] = _is_manual
 
         remaining_count = self.get_asset_position_count(position.asset, position.side)
 
