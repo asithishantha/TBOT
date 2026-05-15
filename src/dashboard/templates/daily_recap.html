@@ -167,10 +167,12 @@
                 <option value="BTC">BTC</option>
                 <option value="GOLD">Gold</option>
                 <option value="USTEC">USTEC</option>
-                <option value="EURJPY">EURJPY</option>
                 <option value="EURUSD">EURUSD</option>
+                <option value="GBPUSD">GBPUSD</option>
+                <option value="USDJPY">USDJPY</option>
                 <option value="USOIL">USOIL</option>
                 <option value="GBPAUD">GBPAUD</option>
+                <option value="EURJPY">EURJPY</option>
             </select>
             <select id="mode-selector">
                 <option value="daily">Daily</option>
@@ -257,7 +259,8 @@
     // ── Per-asset mock base prices ──
     var ASSET_BASE_PRICES = {
         BTC: 95000, GOLD: 3300, XAU: 3300, USTEC: 19500,
-        EURUSD: 1.085, EURJPY: 161.0, USOIL: 65.0, GBPAUD: 2.0
+        EURUSD: 1.085, EURJPY: 161.0, USOIL: 65.0, GBPAUD: 2.0,
+        GBPUSD: 1.27, USDJPY: 150.0
     };
 
     // ── Chart library init ──
@@ -404,7 +407,8 @@
         // Determine decimal places per asset
         var dec = 2;
         var a = (t.asset||'').toUpperCase();
-        if (a === 'EURUSD' || a === 'EURJPY' || a === 'GBPAUD') dec = 5;
+        if (a === 'EURUSD' || a === 'EURJPY' || a === 'GBPAUD' || a === 'GBPUSD') dec = 5;
+        else if (a === 'USDJPY') dec = 3;
         else if (a === 'BTC' || a === 'USTEC' || a === 'USOIL') dec = 2;
 
         var html = '';

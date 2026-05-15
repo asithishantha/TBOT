@@ -331,6 +331,7 @@ class TradingTelegramBot:
         # Admin Commands
         self.application.add_handler(CommandHandler("stop_trading", self.cmd_stop_trading))
         self.application.add_handler(CommandHandler("start_trading", self.cmd_start_trading))
+        self.application.add_handler(CommandHandler("resume", self.cmd_resume_trading))
         self.application.add_handler(CommandHandler("close_all", self.cmd_close_all))
         self.application.add_handler(CommandHandler("close", self.cmd_close_asset))
 
@@ -495,6 +496,8 @@ class TradingTelegramBot:
                 "\n🎮 <b>Admin Controls</b>\n"
                 "/start_trading — Resume signal processing\n"
                 "/stop_trading — Pause (keep positions open)\n"
+                "/resume — Override a tripped circuit breaker (clears at midnight)\n"
+                "/reset_equity — Re-baseline equity to clear phantom drawdown\n"
                 "/close_all — Emergency close all positions\n"
                 "/close ASSET [#] — Close all or specific position for asset\n"
                 "\n⚠️ <i>Admin commands are restricted to authorized users.</i>"
@@ -1580,6 +1583,61 @@ class TradingTelegramBot:
             logger.info("Trading resumed via Telegram command")
 
     @admin_only
+    async def cmd_resume_trading(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ):
+        """
+        /resume — Override a tripped circuit breaker and allow new trades.
+
+        This bypasses the daily-loss / drawdown / loss-streak gates until
+        midnight (when the next trading session resets the override).
+        Existing equity and peak values are left untouched — use /reset_equity
+        if you also want to re-baseline those.
+        """
+        if not self.trading_bot:
+            await update.message.reply_text("⚠️ Trading bot not connected.")
+            return
+
+        pm = self.trading_bot.portfolio_manager
+
+        # Diagnose current breaker state before overriding
+        halted, reason = pm.check_circuit_breaker()
+
+        # Set override flag
+        pm._circuit_breaker_override = True
+
+        # Also make sure the bot loop is actually running
+        was_stopped = not self.trading_bot.is_running
+        if was_stopped:
+            self.trading_bot.is_running = True
+
+        lines = [
+            "🟡 <b>Circuit Breaker Overridden</b>",
+            "",
+        ]
+        if halted:
+            lines.append(f"Was halted because: <i>{reason}</i>")
+        else:
+            lines.append("ℹ️ Circuit breaker was not currently active — override set anyway.")
+
+        if was_stopped:
+            lines.append("▶️ Bot loop was stopped — restarted.")
+
+        lines += [
+            "",
+            "⚠️ <b>New positions may now be opened.</b>",
+            "Override clears automatically at the next session start (midnight).",
+            "Use /stop_trading to re-engage the halt manually.",
+        ]
+
+        user = update.effective_user
+        logger.warning(
+            f"[TG] /resume: circuit-breaker override set by "
+            f"{user.username or user.id}. Prior reason: {reason or 'none'}"
+        )
+        await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+
+    @admin_only
     async def cmd_stop_trading(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ):
@@ -1588,6 +1646,10 @@ class TradingTelegramBot:
             await update.message.reply_text("ℹ️ Trading is already stopped.")
         else:
             self.trading_bot.is_running = False
+            # Also clear any active /resume override so the circuit breaker re-engages
+            pm = getattr(self.trading_bot, "portfolio_manager", None)
+            if pm and getattr(pm, "_circuit_breaker_override", False):
+                pm._circuit_breaker_override = False
             await update.message.reply_text(
                 "🔴 *Trading Stopped*\n\n"
                 "Bot will not open new positions.\n"

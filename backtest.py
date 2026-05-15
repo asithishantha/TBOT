@@ -166,7 +166,62 @@ AGGREGATOR_PRESETS = {
             "opposition_penalty": 0.5,
         },
     },
+    "EURUSD": {
+        "conservative": {"buy_threshold": 0.38, "sell_threshold": 0.42, "two_strategy_bonus": 0.18, "three_strategy_bonus": 0.25, "bull_buy_boost": 0.07, "bull_sell_penalty": 0.09, "bear_sell_boost": 0.07, "bear_buy_penalty": 0.09, "min_confidence_to_use": 0.12, "min_signal_quality": 0.30, "hold_contribution_pct": 0.0, "allow_single_override": True, "single_override_threshold": 0.75, "opposition_penalty": 0.5, "verbose": False},
+        "balanced":     {"buy_threshold": 0.32, "sell_threshold": 0.36, "two_strategy_bonus": 0.20, "three_strategy_bonus": 0.25, "bull_buy_boost": 0.09, "bull_sell_penalty": 0.09, "bear_sell_boost": 0.09, "bear_buy_penalty": 0.09, "min_confidence_to_use": 0.10, "min_signal_quality": 0.27, "hold_contribution_pct": 0.0, "allow_single_override": True, "single_override_threshold": 0.72, "opposition_penalty": 0.5, "verbose": False},
+        "aggressive":   {"buy_threshold": 0.26, "sell_threshold": 0.30, "two_strategy_bonus": 0.22, "three_strategy_bonus": 0.30, "bull_buy_boost": 0.10, "bull_sell_penalty": 0.10, "bear_sell_boost": 0.10, "bear_buy_penalty": 0.10, "min_confidence_to_use": 0.08, "min_signal_quality": 0.22, "hold_contribution_pct": 0.0, "allow_single_override": True, "single_override_threshold": 0.70, "opposition_penalty": 0.5, "verbose": False},
+        "scalper":      {"buy_threshold": 0.22, "sell_threshold": 0.28, "two_strategy_bonus": 0.25, "three_strategy_bonus": 0.35, "bull_buy_boost": 0.12, "bull_sell_penalty": 0.08, "bear_sell_boost": 0.12, "bear_buy_penalty": 0.08, "min_confidence_to_use": 0.06, "min_signal_quality": 0.18, "hold_contribution_pct": 0.0, "allow_single_override": True, "single_override_threshold": 0.65, "verbose": False, "min_quality_margin": 0.06, "opposition_penalty": 0.5},
+    },
+    "GBPUSD": {
+        # GBP/USD — London session trending, high ATR, strong 1H follow-through
+        "conservative": {"buy_threshold": 0.36, "sell_threshold": 0.40, "two_strategy_bonus": 0.18, "three_strategy_bonus": 0.24, "bull_buy_boost": 0.08, "bull_sell_penalty": 0.10, "bear_sell_boost": 0.08, "bear_buy_penalty": 0.10, "min_confidence_to_use": 0.12, "min_signal_quality": 0.30, "hold_contribution_pct": 0.0, "allow_single_override": True, "single_override_threshold": 0.75, "opposition_penalty": 0.5, "verbose": False},
+        "balanced":     {"buy_threshold": 0.30, "sell_threshold": 0.35, "two_strategy_bonus": 0.20, "three_strategy_bonus": 0.25, "bull_buy_boost": 0.10, "bull_sell_penalty": 0.10, "bear_sell_boost": 0.10, "bear_buy_penalty": 0.10, "min_confidence_to_use": 0.10, "min_signal_quality": 0.26, "hold_contribution_pct": 0.0, "allow_single_override": True, "single_override_threshold": 0.72, "opposition_penalty": 0.5, "verbose": False},
+        "aggressive":   {"buy_threshold": 0.25, "sell_threshold": 0.29, "two_strategy_bonus": 0.22, "three_strategy_bonus": 0.28, "bull_buy_boost": 0.11, "bull_sell_penalty": 0.11, "bear_sell_boost": 0.11, "bear_buy_penalty": 0.11, "min_confidence_to_use": 0.08, "min_signal_quality": 0.21, "hold_contribution_pct": 0.0, "allow_single_override": True, "single_override_threshold": 0.70, "opposition_penalty": 0.5, "verbose": False},
+        "scalper":      {"buy_threshold": 0.21, "sell_threshold": 0.27, "two_strategy_bonus": 0.25, "three_strategy_bonus": 0.33, "bull_buy_boost": 0.13, "bull_sell_penalty": 0.08, "bear_sell_boost": 0.13, "bear_buy_penalty": 0.08, "min_confidence_to_use": 0.06, "min_signal_quality": 0.17, "hold_contribution_pct": 0.0, "allow_single_override": True, "single_override_threshold": 0.65, "verbose": False, "min_quality_margin": 0.06, "opposition_penalty": 0.5},
+    },
+    "USDJPY": {
+        # USD/JPY — Asian session anchor, clean trending, tight spread
+        "conservative": {"buy_threshold": 0.36, "sell_threshold": 0.40, "two_strategy_bonus": 0.18, "three_strategy_bonus": 0.24, "bull_buy_boost": 0.08, "bull_sell_penalty": 0.10, "bear_sell_boost": 0.08, "bear_buy_penalty": 0.10, "min_confidence_to_use": 0.12, "min_signal_quality": 0.30, "hold_contribution_pct": 0.0, "allow_single_override": True, "single_override_threshold": 0.75, "opposition_penalty": 0.5, "verbose": False},
+        "balanced":     {"buy_threshold": 0.30, "sell_threshold": 0.34, "two_strategy_bonus": 0.20, "three_strategy_bonus": 0.25, "bull_buy_boost": 0.10, "bull_sell_penalty": 0.10, "bear_sell_boost": 0.10, "bear_buy_penalty": 0.10, "min_confidence_to_use": 0.10, "min_signal_quality": 0.25, "hold_contribution_pct": 0.0, "allow_single_override": True, "single_override_threshold": 0.72, "opposition_penalty": 0.5, "verbose": False},
+        "aggressive":   {"buy_threshold": 0.24, "sell_threshold": 0.28, "two_strategy_bonus": 0.22, "three_strategy_bonus": 0.28, "bull_buy_boost": 0.11, "bull_sell_penalty": 0.11, "bear_sell_boost": 0.11, "bear_buy_penalty": 0.11, "min_confidence_to_use": 0.08, "min_signal_quality": 0.20, "hold_contribution_pct": 0.0, "allow_single_override": True, "single_override_threshold": 0.70, "opposition_penalty": 0.5, "verbose": False},
+        "scalper":      {"buy_threshold": 0.20, "sell_threshold": 0.26, "two_strategy_bonus": 0.25, "three_strategy_bonus": 0.33, "bull_buy_boost": 0.13, "bull_sell_penalty": 0.08, "bear_sell_boost": 0.13, "bear_buy_penalty": 0.08, "min_confidence_to_use": 0.06, "min_signal_quality": 0.16, "hold_contribution_pct": 0.0, "allow_single_override": True, "single_override_threshold": 0.65, "verbose": False, "min_quality_margin": 0.06, "opposition_penalty": 0.5},
+    },
+    "USTEC": {
+        "conservative": {"buy_threshold": 0.36, "sell_threshold": 0.40, "two_strategy_bonus": 0.18, "three_strategy_bonus": 0.22, "bull_buy_boost": 0.09, "bull_sell_penalty": 0.11, "bear_sell_boost": 0.09, "bear_buy_penalty": 0.11, "min_confidence_to_use": 0.12, "min_signal_quality": 0.30, "hold_contribution_pct": 0.0, "allow_single_override": True, "single_override_threshold": 0.75, "opposition_penalty": 0.5, "verbose": False},
+        "balanced":     {"buy_threshold": 0.31, "sell_threshold": 0.35, "two_strategy_bonus": 0.20, "three_strategy_bonus": 0.24, "bull_buy_boost": 0.10, "bull_sell_penalty": 0.10, "bear_sell_boost": 0.10, "bear_buy_penalty": 0.10, "min_confidence_to_use": 0.10, "min_signal_quality": 0.27, "hold_contribution_pct": 0.0, "allow_single_override": True, "single_override_threshold": 0.72, "opposition_penalty": 0.5, "verbose": False},
+        "aggressive":   {"buy_threshold": 0.26, "sell_threshold": 0.30, "two_strategy_bonus": 0.22, "three_strategy_bonus": 0.27, "bull_buy_boost": 0.11, "bull_sell_penalty": 0.11, "bear_sell_boost": 0.11, "bear_buy_penalty": 0.11, "min_confidence_to_use": 0.09, "min_signal_quality": 0.22, "hold_contribution_pct": 0.0, "allow_single_override": True, "single_override_threshold": 0.70, "opposition_penalty": 0.5, "verbose": False},
+        "scalper":      {"buy_threshold": 0.22, "sell_threshold": 0.28, "two_strategy_bonus": 0.25, "three_strategy_bonus": 0.32, "bull_buy_boost": 0.13, "bull_sell_penalty": 0.09, "bear_sell_boost": 0.13, "bear_buy_penalty": 0.09, "min_confidence_to_use": 0.07, "min_signal_quality": 0.18, "hold_contribution_pct": 0.0, "allow_single_override": True, "single_override_threshold": 0.65, "verbose": False, "min_quality_margin": 0.06, "opposition_penalty": 0.5},
+    },
+    "USOIL": {
+        "conservative": {"buy_threshold": 0.37, "sell_threshold": 0.41, "two_strategy_bonus": 0.18, "three_strategy_bonus": 0.24, "bull_buy_boost": 0.08, "bull_sell_penalty": 0.10, "bear_sell_boost": 0.08, "bear_buy_penalty": 0.10, "min_confidence_to_use": 0.12, "min_signal_quality": 0.30, "hold_contribution_pct": 0.0, "allow_single_override": True, "single_override_threshold": 0.75, "opposition_penalty": 0.5, "verbose": False},
+        "balanced":     {"buy_threshold": 0.32, "sell_threshold": 0.36, "two_strategy_bonus": 0.20, "three_strategy_bonus": 0.25, "bull_buy_boost": 0.09, "bull_sell_penalty": 0.09, "bear_sell_boost": 0.09, "bear_buy_penalty": 0.09, "min_confidence_to_use": 0.10, "min_signal_quality": 0.27, "hold_contribution_pct": 0.0, "allow_single_override": True, "single_override_threshold": 0.72, "opposition_penalty": 0.5, "verbose": False},
+        "aggressive":   {"buy_threshold": 0.27, "sell_threshold": 0.31, "two_strategy_bonus": 0.22, "three_strategy_bonus": 0.29, "bull_buy_boost": 0.10, "bull_sell_penalty": 0.10, "bear_sell_boost": 0.10, "bear_buy_penalty": 0.10, "min_confidence_to_use": 0.08, "min_signal_quality": 0.22, "hold_contribution_pct": 0.0, "allow_single_override": True, "single_override_threshold": 0.70, "opposition_penalty": 0.5, "verbose": False},
+        "scalper":      {"buy_threshold": 0.23, "sell_threshold": 0.29, "two_strategy_bonus": 0.25, "three_strategy_bonus": 0.34, "bull_buy_boost": 0.12, "bull_sell_penalty": 0.08, "bear_sell_boost": 0.12, "bear_buy_penalty": 0.08, "min_confidence_to_use": 0.06, "min_signal_quality": 0.18, "hold_contribution_pct": 0.0, "allow_single_override": True, "single_override_threshold": 0.65, "verbose": False, "min_quality_margin": 0.06, "opposition_penalty": 0.5},
+    },
+    "GBPAUD": {
+        "conservative": {"buy_threshold": 0.38, "sell_threshold": 0.42, "two_strategy_bonus": 0.18, "three_strategy_bonus": 0.25, "bull_buy_boost": 0.07, "bull_sell_penalty": 0.09, "bear_sell_boost": 0.07, "bear_buy_penalty": 0.09, "min_confidence_to_use": 0.13, "min_signal_quality": 0.32, "hold_contribution_pct": 0.0, "allow_single_override": True, "single_override_threshold": 0.75, "opposition_penalty": 0.5, "verbose": False},
+        "balanced":     {"buy_threshold": 0.33, "sell_threshold": 0.37, "two_strategy_bonus": 0.20, "three_strategy_bonus": 0.26, "bull_buy_boost": 0.08, "bull_sell_penalty": 0.08, "bear_sell_boost": 0.08, "bear_buy_penalty": 0.08, "min_confidence_to_use": 0.11, "min_signal_quality": 0.28, "hold_contribution_pct": 0.0, "allow_single_override": True, "single_override_threshold": 0.73, "opposition_penalty": 0.5, "verbose": False},
+        "aggressive":   {"buy_threshold": 0.28, "sell_threshold": 0.32, "two_strategy_bonus": 0.22, "three_strategy_bonus": 0.30, "bull_buy_boost": 0.09, "bull_sell_penalty": 0.09, "bear_sell_boost": 0.09, "bear_buy_penalty": 0.09, "min_confidence_to_use": 0.09, "min_signal_quality": 0.23, "hold_contribution_pct": 0.0, "allow_single_override": True, "single_override_threshold": 0.70, "opposition_penalty": 0.5, "verbose": False},
+        "scalper":      {"buy_threshold": 0.24, "sell_threshold": 0.30, "two_strategy_bonus": 0.25, "three_strategy_bonus": 0.35, "bull_buy_boost": 0.11, "bull_sell_penalty": 0.08, "bear_sell_boost": 0.11, "bear_buy_penalty": 0.08, "min_confidence_to_use": 0.07, "min_signal_quality": 0.19, "hold_contribution_pct": 0.0, "allow_single_override": True, "single_override_threshold": 0.65, "verbose": False, "min_quality_margin": 0.07, "opposition_penalty": 0.5},
+    },
 }
+
+# Fallback preset used when an asset has no explicit entry in AGGREGATOR_PRESETS
+_DEFAULT_PRESET = {
+    "conservative": AGGREGATOR_PRESETS["GOLD"]["conservative"],
+    "balanced":     AGGREGATOR_PRESETS["GOLD"]["balanced"],
+    "aggressive":   AGGREGATOR_PRESETS["GOLD"]["aggressive"],
+    "scalper":      AGGREGATOR_PRESETS["GOLD"]["scalper"],
+}
+
+
+def get_aggregator_preset(asset_key: str, preset_name: str) -> dict:
+    """Return the aggregator config for (asset, preset), falling back to GOLD defaults."""
+    presets = AGGREGATOR_PRESETS.get(asset_key, _DEFAULT_PRESET)
+    if preset_name not in presets:
+        logger.warning(f"Unknown preset '{preset_name}' for {asset_key}, using 'balanced'")
+        preset_name = "balanced"
+    return presets[preset_name].copy()
 
 
 class MLStrategy(bt.Strategy):
@@ -249,11 +304,7 @@ class MLStrategy(bt.Strategy):
 
         # Get asset-specific preset configuration
         preset_name = self.params.aggregator_preset
-        if preset_name not in AGGREGATOR_PRESETS[self.asset_key]:
-            logger.warning(f"Unknown preset '{preset_name}', using 'balanced'")
-            preset_name = "balanced"
-
-        confidence_config = AGGREGATOR_PRESETS[self.asset_key][preset_name].copy()
+        confidence_config = get_aggregator_preset(self.asset_key, preset_name)
 
         # Initialize PerformanceWeightedAggregator
         self.aggregator = PerformanceWeightedAggregator(

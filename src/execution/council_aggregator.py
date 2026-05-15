@@ -656,6 +656,10 @@ class InstitutionalCouncilAggregator:
                 )
                 return adj_score, "EXTENDED"
 
+            logger.debug(
+                f"[LIFECYCLE] ✅ HEALTHY — ADX={adx_now:.1f} peak-decline={adx_peak_decline_pct:.0%} "
+                f"z={directional_z:.2f}σ divergence={rsi_divergence}. No score adjustment."
+            )
             return current_required_score, "HEALTHY"
 
         except Exception as e:

@@ -192,14 +192,18 @@ class Position:
                         # fractions that would round to zero on a 0.01-lot trade.
                         _all_tps = self.trade_manager.take_profit_levels
                         if _all_tps:
-                            self.trade_manager.take_profit_levels = [_all_tps[-1]]
+                            # Use TP1 (nearest target) for min-lot positions.
+                            # Previously used TP3 (furthest) which almost never hit —
+                            # a min-lot position cannot partial-exit, so the single exit
+                            # should be the highest-probability target, not the home-run.
+                            self.trade_manager.take_profit_levels = [_all_tps[0]]
                         else:
                             self.trade_manager.take_profit_levels = []
                         self.trade_manager.partial_sizes = []
                         logger.info(
                             f"[VTM] ⚠️ Partials disabled for {asset} (min-lot position) "
                             f"— single full-exit TP set to "
-                            f"{f'${_all_tps[-1]:,.5f}' if _all_tps else 'none'}"
+                            f"{f'${_all_tps[0]:,.5f}' if _all_tps else 'none'}"
                         )
 
                     self.stop_loss = self.trade_manager.initial_stop_loss
@@ -578,6 +582,7 @@ class PortfolioManager:
         self.performance_tracker = PerformanceTracker()  # ✨ NEW: Strategy Performance Tracking
         self.loss_streak = 0  # ✨ NEW: Consecutive Loss Tracking
         self._loss_streak_alerted = False  # Guard: send alert only ONCE per streak
+        self._circuit_breaker_override = False  # Manual override via /resume Telegram command
 
         self.session_start_time = None
         self.session_start_equity = None
@@ -1183,6 +1188,12 @@ class PortfolioManager:
 
     def check_circuit_breaker(self) -> tuple:
         """Check if trading should be halted due to risk breaches"""
+        # Manual override: /resume Telegram command bypasses all circuit-breaker conditions.
+        # The override is cleared automatically at the start of the next trading day via
+        # reset_daily_stats().  You can also re-engage the breaker with /stop_trading.
+        if getattr(self, "_circuit_breaker_override", False):
+            return False, ""
+
         if self.session_start_equity and self.session_start_equity > 0:
             daily_loss = (self.session_start_equity - self.equity) / self.session_start_equity
             limit = self.risk_cfg.get('max_daily_loss_pct', 0.03)
@@ -3100,6 +3111,10 @@ class PortfolioManager:
         self.session_start_equity = self.equity
         self.session_start_capital = self.current_capital
         self.realized_pnl_today = 0.0
+        # Clear any manual /resume override at the start of a new trading day
+        if getattr(self, "_circuit_breaker_override", False):
+            self._circuit_breaker_override = False
+            logger.info("[SESSION] Circuit-breaker manual override cleared for new session.")
         open_count = len(self.positions)
         logger.info(
             f"Trading session started at {self.session_start_time}\n"
@@ -3696,6 +3711,10 @@ class PortfolioManager:
         self.session_start_equity = self.equity
         self.session_start_capital = self.current_capital
         self.realized_pnl_today = 0.0
+        # Clear any manual /resume override at the start of a new trading day
+        if getattr(self, "_circuit_breaker_override", False):
+            self._circuit_breaker_override = False
+            logger.info("[SESSION] Circuit-breaker manual override cleared for new session.")
         open_count = len(self.positions)
         logger.info(
             f"Trading session started at {self.session_start_time}\n"

@@ -49,11 +49,21 @@ FRICTION_PENALTIES: Dict[str, float] = {
     "BTCUSDT": 0.0003,
     "GOLD":   0.0008,   # 0.08%
     "XAUUSD": 0.0008,
+    "XAUUSDm": 0.0008,
     "USTEC":  0.0005,   # 0.05%
+    "USTECm": 0.0005,
     "EURJPY": 0.0004,   # 0.04%
+    "EURJPYm": 0.0004,
     "EURUSD": 0.0003,
+    "EURUSDm": 0.0003,
+    "GBPUSD": 0.0003,   # 0.03% — tight spread major pair
+    "GBPUSDm": 0.0003,
+    "USDJPY": 0.0002,   # 0.02% — tightest spread major
+    "USDJPYm": 0.0002,
     "USOIL":  0.0006,   # 0.06% round-trip (oil has wider spreads)
+    "USOILm": 0.0006,
     "GBPAUD": 0.0005,   # 0.05% round-trip
+    "GBPAUDm": 0.0005,
 }
 _DEFAULT_FRICTION = 0.0005
 

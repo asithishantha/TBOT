@@ -55,7 +55,7 @@ from src.ai.analyst import DynamicAnalyst
 
 def train_dual_timeframe_system(
     # DATA SOURCES (must provide both timeframes)
-    assets=["btc", "gold", "ustec", "eurjpy", "eurusd"],
+    assets=["btc", "gold", "ustec", "eurusd", "usoil", "gbpaud", "gbpusd", "usdjpy"],
     data_folder=None,
     # TRAINING PARAMETERS
     samples_per_pattern=2000,
@@ -716,7 +716,7 @@ if __name__ == "__main__":
 
     # Train the system
     sniper, pattern_map, history, config = train_dual_timeframe_system(
-        assets=["btc", "gold", "ustec", "eurjpy", "eurusd"],
+        assets=["btc", "gold", "ustec", "eurusd", "usoil", "gbpaud", "gbpusd", "usdjpy"],
         data_folder=None, # ✅ Defaults to project_root / "data" / "raw"
         samples_per_pattern=2000,
         min_samples_per_class=50,

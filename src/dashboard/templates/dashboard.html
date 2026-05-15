@@ -957,14 +957,16 @@
     <div style="font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin-bottom:8px;">
         📡 MTF Regime
     </div>
-    <div class="regime-strip" id="regime-strip">
+    <div class="regime-strip" id="regime-strip" style="grid-template-columns: repeat(9, 1fr);">
         <div class="regime-card"><div class="regime-dot" style="background:var(--muted)"></div><div><div class="regime-asset">BTC</div><div class="regime-label" id="reg-btc">Loading…</div></div></div>
         <div class="regime-card"><div class="regime-dot" style="background:var(--muted)"></div><div><div class="regime-asset">GOLD</div><div class="regime-label" id="reg-gold">Loading…</div></div></div>
         <div class="regime-card"><div class="regime-dot" style="background:var(--muted)"></div><div><div class="regime-asset">EURUSD</div><div class="regime-label" id="reg-eurusd">Loading…</div></div></div>
-        <div class="regime-card"><div class="regime-dot" style="background:var(--muted)"></div><div><div class="regime-asset">EURJPY</div><div class="regime-label" id="reg-eurjpy">Loading…</div></div></div>
+        <div class="regime-card"><div class="regime-dot" style="background:var(--muted)"></div><div><div class="regime-asset">GBPUSD</div><div class="regime-label" id="reg-gbpusd">Loading…</div></div></div>
+        <div class="regime-card"><div class="regime-dot" style="background:var(--muted)"></div><div><div class="regime-asset">USDJPY</div><div class="regime-label" id="reg-usdjpy">Loading…</div></div></div>
         <div class="regime-card"><div class="regime-dot" style="background:var(--muted)"></div><div><div class="regime-asset">USTEC</div><div class="regime-label" id="reg-ustec">Loading…</div></div></div>
         <div class="regime-card"><div class="regime-dot" style="background:var(--muted)"></div><div><div class="regime-asset">USOIL</div><div class="regime-label" id="reg-usoil">Loading…</div></div></div>
         <div class="regime-card"><div class="regime-dot" style="background:var(--muted)"></div><div><div class="regime-asset">GBPAUD</div><div class="regime-label" id="reg-gbpaud">Loading…</div></div></div>
+        <div class="regime-card"><div class="regime-dot" style="background:var(--muted)"></div><div><div class="regime-asset">EURJPY</div><div class="regime-label" id="reg-eurjpy">Loading…</div></div></div>
     </div>
 
     <!-- ── Charts ───────────────────────────── -->
@@ -1026,8 +1028,12 @@
                             <option value="BTC">BTC</option>
                             <option value="GOLD">GOLD</option>
                             <option value="EURUSD">EURUSD</option>
-                            <option value="EURJPY">EURJPY</option>
+                            <option value="GBPUSD">GBPUSD</option>
+                            <option value="USDJPY">USDJPY</option>
                             <option value="USTEC">USTEC</option>
+                            <option value="USOIL">USOIL</option>
+                            <option value="GBPAUD">GBPAUD</option>
+                            <option value="EURJPY">EURJPY</option>
                         </select>
                         <span class="signals-meta" id="signals-meta"></span>
                     </div>
@@ -1281,7 +1287,7 @@ async function loadPerformance() {
 // REGIMES
 // ────────────────────────────────────────────────────────────
 async function loadRegimes() {
-    const assets = ['BTC','GOLD','EURUSD','EURJPY','USTEC','USOIL','GBPAUD'];
+    const assets = ['BTC','GOLD','EURUSD','GBPUSD','USDJPY','USTEC','USOIL','GBPAUD','EURJPY'];
     await Promise.allSettled(assets.map(a => loadRegime(a)));
 }
 
@@ -2210,6 +2216,7 @@ async function showLogs(type='bot') {
 // ────────────────────────────────────────────────────────────
 const ASSET_ICONS = {
     BTC:'₿', GOLD:'🥇', USTEC:'📊', EURUSD:'💱', EURJPY:'💱', USOIL:'🛢', GBPAUD:'💱',
+    GBPUSD:'💱', USDJPY:'💱',
     ETH:'Ξ', XAU:'🥇', NAS100:'📊',
 };
 function assetIcon(asset) {
@@ -2459,7 +2466,7 @@ const CC_SECTIONS = {
     portfolio:           { icon: '💼', label: 'Portfolio' },
     trading:             { icon: '⚙️', label: 'Execution' },
 };
-const CC_ASSETS = ['BTC', 'GOLD', 'EURUSD', 'EURJPY', 'USTEC', 'USOIL', 'GBPAUD'];
+const CC_ASSETS = ['BTC', 'GOLD', 'EURUSD', 'GBPUSD', 'USDJPY', 'USTEC', 'USOIL', 'GBPAUD', 'EURJPY'];
 
 async function loadControlCenter(forceRefresh = false) {
     // Always re-fetch if there are no unsaved changes, or if explicitly forced.

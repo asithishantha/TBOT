@@ -369,8 +369,9 @@ async def cmd_close_asset(self, update: Update, context: ContextTypes.DEFAULT_TY
         
         asset = context.args[0].upper()
         
-        if asset not in ["BTC", "GOLD"]:
-            await update.message.reply_text("⚠️ Invalid asset")
+        valid_assets = ["BTC", "GOLD", "EURUSD", "USTEC", "USOIL", "GBPAUD", "GBPUSD", "USDJPY", "EURJPY"]
+        if asset not in valid_assets:
+            await update.message.reply_text(f"⚠️ Invalid asset. Valid: {', '.join(valid_assets)}")
             return
         
         data_mgr = self.trading_bot.data_manager_telegram

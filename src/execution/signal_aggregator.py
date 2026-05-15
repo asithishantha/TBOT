@@ -297,21 +297,15 @@ Adds Governor + Volatility + Sniper checks to existing aggregator
         # across the overnight close gap. Crypto is 24/7 so 30 min is tight enough.
         self._last_prices = {}
         self._stale_threshold_minutes = 65   # default — exceeds 1H candle duration
-        self._stale_thresholds = {           # per-asset overrides
+        self._stale_thresholds = {           # per-asset overrides (MT5 = 90 min, crypto = default 65)
             "GOLD":   90,
             "USTEC":  90,
             "EURUSD": 90,
             "EURJPY": 90,
             "USOIL":  90,
             "GBPAUD": 90,
-        }   # default (crypto / Binance)
-        self._stale_thresholds = {           # per-asset overrides
-            "GOLD":   90,
-            "USTEC":  90,
-            "EURUSD": 90,
-            "EURJPY": 90,
-            "USOIL":  90,
-            "GBPAUD": 90,
+            "GBPUSD": 90,
+            "USDJPY": 90,
         }
 
         # T3.4: Economic calendar — loaded at startup, hot-reloaded by CalendarUpdater

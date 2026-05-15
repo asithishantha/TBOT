@@ -5198,11 +5198,6 @@ def main():
 
             if strategies.get("trend_following", {}).get("enabled", False):
                 required_models.append(
-                    f"models/mean_reversion_{asset_name.lower()}.pkl"
-                )
-
-            if strategies.get("trend_following", {}).get("enabled", False):
-                required_models.append(
                     f"models/trend_following_{asset_name.lower()}.pkl"
                 )
 

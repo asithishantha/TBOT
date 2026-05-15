@@ -227,36 +227,56 @@ class VeteranTradeManager:
             # ATR-based adaptive cap (Replacing static max_stop_pct)
             max_stop_dist = atr_fast * 5.0
             min_rr = 1.5
-            
+
             stop_distance = abs(entry_price - stop_loss)
-            
+
             if stop_distance > max_stop_dist:
                 return False, f"Stop too wide: ${stop_distance:,.2f} > 5.0 * ATR (${max_stop_dist:,.2f})"
-            
-            risk_multiples = risk_config.get("partial_targets", [1.5])
-            first_target_multiple = risk_multiples[0] if risk_multiples else 1.5
-            
-            # expected_tp_distance = abs(tp - entry)
-            expected_tp_distance = stop_distance * first_target_multiple
-            
-            # BLOCK trade IF: expected_tp_distance < (0.5 * atr_fast)
-            if expected_tp_distance < (0.5 * atr_fast):
-                return False, f"Profit target too close: ${expected_tp_distance:,.2f} < 0.5 * ATR (${0.5 * atr_fast:,.2f})"
-            
-            actual_rr = expected_tp_distance / stop_distance if stop_distance > 0 else 0
-            if actual_rr < min_rr - 1e-9:
-                return False, f"R:R too low: {actual_rr:.2f}:1 < {min_rr:.2f}:1 (min for TREND)"
-            
+
+            risk_multiples = risk_config.get("partial_targets", [1.0, 1.8, 3.0])
+            partial_sizes  = risk_config.get("partial_sizes",   [0.45, 0.30, 0.25])
+            if not risk_multiples:
+                risk_multiples = [1.0, 1.8, 3.0]
+            if not partial_sizes:
+                partial_sizes = [1.0 / len(risk_multiples)] * len(risk_multiples)
+
+            # ── Closest-target check (TP1 must clear half an ATR minimum) ──
+            first_tp_dist = stop_distance * risk_multiples[0]
+            if first_tp_dist < (0.5 * atr_fast):
+                return False, (
+                    f"TP1 too close to entry: ${first_tp_dist:,.2f} < 0.5×ATR (${0.5*atr_fast:,.2f})"
+                )
+
+            # ── Weighted R:R across ALL partial exits ──────────────────────
+            # Using only TP1 as the R:R measure is wrong for partial-exit systems:
+            # with TP1 at 1.0R (deliberate close first exit), the check always
+            # fires even though weighted R:R across [1.0, 1.8, 3.0] is ~1.74.
+            n = min(len(risk_multiples), len(partial_sizes))
+            total_weight = sum(partial_sizes[:n])
+            if total_weight > 0:
+                weighted_rr = sum(
+                    risk_multiples[i] * partial_sizes[i]
+                    for i in range(n)
+                ) / total_weight
+            else:
+                weighted_rr = risk_multiples[0]
+
+            if weighted_rr < min_rr - 1e-9:
+                return False, (
+                    f"Weighted R:R too low: {weighted_rr:.2f}:1 < {min_rr:.2f}:1 "
+                    f"(targets={risk_multiples}, sizes={partial_sizes})"
+                )
+
             logger.info(
                 f"[VTM PRE-FLIGHT] ✅ Trade Valid\n"
-                f"  Type:   TREND\n"
-                f"  Stop:   ${stop_distance:,.2f} ({(stop_distance/entry_price):.2%})\n"
-                f"  Profit: ${expected_tp_distance:,.2f} ({(expected_tp_distance/entry_price):.2%})\n"
-                f"  R:R:    {actual_rr:.2f}:1"
+                f"  Type:        TREND\n"
+                f"  Stop:        ${stop_distance:,.2f} ({(stop_distance/entry_price):.2%})\n"
+                f"  TP1 dist:    ${first_tp_dist:,.2f} ({(first_tp_dist/entry_price):.2%})\n"
+                f"  Weighted R:R:{weighted_rr:.2f}:1  (targets={risk_multiples})"
             )
-            
+
             return True, "OK"
-            
+
         except Exception as e:
             logger.error(f"[VTM PRE-FLIGHT] Error: {e}", exc_info=True)
             return False, f"Validation error: {str(e)}"
@@ -314,27 +334,37 @@ class VeteranTradeManager:
         self.ema_4h_50 = gov_data.get("ema_4h_50")
 
         # ✅ TASK 18: Regime-Adaptive ATR Multipliers
-        self.atr_multiplier = self.risk_config.get("atr_multiplier", 1.8)
-        
-        # Override with dynamic multipliers based on regime/type
+        # config_base is the per-asset value from config.json (e.g. 1.5 for GBPUSD).
+        # Regime logic adds on top rather than fully overriding — so raising atr_multiplier
+        # in config.json actually widens the SL rather than being silently ignored.
+        config_base = self.risk_config.get("atr_multiplier", 1.8)
+
         if self.trade_type == "REVERSION":
-            self.atr_multiplier = 1.5 # Tighter for mean reversion
+            # Reversion trades need at least as much room as a trend trade: mean-reversion
+            # entries sit inside a range where a single wick routinely exceeds 1×ATR.
+            # Hard floor of 2.0 prevents the 1.5× tight-stop chop problem.
+            self.atr_multiplier = max(config_base, 2.0)
         elif self.trade_type == "TREND":
-            # Check for high volatility or bearish regimes via signal_details
             regime = self.signal_details.get("regime", "NEUTRAL")
             volatility = self.signal_details.get("volatility_regime", "normal")
-            
             if "BEAR" in regime or volatility == "high":
-                self.atr_multiplier = 2.5 # Wide for safety in bears/volatility
+                # Adverse conditions: add 0.5 on top of config, minimum floor 2.5
+                self.atr_multiplier = max(config_base + 0.5, 2.5)
             else:
-                self.atr_multiplier = 2.0 # Standard trend breathing room
+                # Normal/bull: add 0.3 on top of config, minimum floor 2.0
+                self.atr_multiplier = max(config_base + 0.3, 2.0)
+        else:
+            self.atr_multiplier = config_base
 
-        logger.info(f"[VTM] Dynamic ATR Multiplier set to {self.atr_multiplier}x ({self.trade_type})")
+        logger.info(
+            f"[VTM] ATR Multiplier: config={config_base}× → effective={self.atr_multiplier}× "
+            f"({self.trade_type}, regime={self.signal_details.get('regime','NEUTRAL')})"
+        )
 
         # T2.5: ADX-conditioned take profit targets.
         # Static targets fail in chop (ADX<20) where price never reaches them,
         # causing the 43% profit capture rate. Scale down in chop, up in momentum.
-        base_targets = self.risk_config.get("partial_targets", [1.5, 3.0, 5.0])
+        base_targets = self.risk_config.get("partial_targets", [1.0, 1.8, 3.0])
         try:
             if len(close) >= 14:
                 import talib as _talib
@@ -692,7 +722,7 @@ class VeteranTradeManager:
                 # Fallback targets
                 if not self.take_profit_levels:
                     self.take_profit_levels = [self.entry_price + (atr * m) if self.side == "long" else self.entry_price - (atr * m) for m in self.partial_targets]
-                    self.partial_sizes = [0.45, 0.30, 0.25]
+                    self.partial_sizes = [0.45, 0.30, 0.25]  # fallback only
 
             # STEP 3 — Lot Sanitizer
             # Reason: Ensures position size is valid for broker submission.
@@ -702,6 +732,10 @@ class VeteranTradeManager:
                 'USTEC': 2,
                 'EURJPY': 2,
                 'EURUSD': 2,
+                'GBPUSD': 2,
+                'USDJPY': 2,
+                'USOIL': 2,
+                'GBPAUD': 2,
             }
 
             precision = self.lot_precision_override if self.lot_precision_override is not None else LOT_PRECISION.get(self.asset.upper(), 2)
@@ -712,7 +746,11 @@ class VeteranTradeManager:
                 'GOLD': 0.01,
                 'USTEC': 0.02,
                 'EURJPY': 0.02,
-                'EURUSD': 0.02
+                'EURUSD': 0.01,
+                'GBPUSD': 0.01,
+                'USDJPY': 0.01,
+                'USOIL': 0.01,
+                'GBPAUD': 0.01,
             }
 
             min_lot = self.min_lot_override if self.min_lot_override is not None else MIN_LOT.get(self.asset.upper(), 0.01)
@@ -832,19 +870,20 @@ class VeteranTradeManager:
             current_profit = self.entry_price - current_price
 
         # --- STEP 0.5: Intermediate Trail (Early Protection) ---
-        # After profit exceeds 0.75×ATR the trade has proven itself enough to start
-        # trailing — but we don't want to immediately snap SL all the way to entry
-        # (Step 1 does that at 1.5×ATR).  This intermediate step trails SL to
-        # entry_price - (initial_risk - 0.5×ATR) for longs (or + for shorts),
-        # reducing risk by ~half while still leaving room to breathe.
+        # Fires when profit exceeds 1.0×ATR — the trade has proven itself with a full
+        # ATR of room, not just 0.75×.  Firing earlier (0.75×) caused chop-outs: a
+        # normal intrabar pullback after a modest push would stop the trade before it
+        # could play out.  At 1.0× the trade has real momentum before we tighten.
+        # SL moves to entry - (initial_risk - 0.5×ATR), reducing risk by ~half while
+        # still leaving 1.5× ATR of breathing room from current price.
         _initial_risk = abs(self.entry_price - self.initial_stop_loss) if self.initial_stop_loss is not None else atr_value
-        if current_profit > 0.75 * atr_value:
+        if current_profit > 1.0 * atr_value:
             if self.side == "long":
                 _intermediate_sl = self.entry_price - max(0.0, _initial_risk - 0.5 * atr_value)
                 if _intermediate_sl > self.current_stop_loss:
                     logger.info(
                         f"[VTM] 🔒 Intermediate trail: {self.asset} SL → {_intermediate_sl:,.5f} "
-                        f"(Profit: ${current_profit:.2f} > 0.75×ATR: ${0.75*atr_value:.2f})"
+                        f"(Profit: ${current_profit:.2f} > 1.0×ATR: ${1.0*atr_value:.2f})"
                     )
                     self.current_stop_loss = _intermediate_sl
             else:
@@ -852,7 +891,7 @@ class VeteranTradeManager:
                 if _intermediate_sl < self.current_stop_loss:
                     logger.info(
                         f"[VTM] 🔒 Intermediate trail: {self.asset} SL → {_intermediate_sl:,.5f} "
-                        f"(Profit: ${current_profit:.2f} > 0.75×ATR: ${0.75*atr_value:.2f})"
+                        f"(Profit: ${current_profit:.2f} > 1.0×ATR: ${1.0*atr_value:.2f})"
                     )
                     self.current_stop_loss = _intermediate_sl
 
@@ -1032,6 +1071,79 @@ class VeteranTradeManager:
                         return {"reason": ExitReason.TREND_INVALIDATION, "price": current_price, "size": ti_size}
             except Exception as _e:
                 logger.debug(f"[VTM] Trend-invalidation check skipped: {_e}")
+
+        # --- STEP 2.8: Counter-Momentum Early Cut ---
+        # Detects strong opposing momentum building AGAINST the trade while it is
+        # still a loser (i.e. before the trailing / break-even machinery can help).
+        # This is the only VTM mechanism that fires on a losing trade.
+        #
+        # Conditions (all must hold):
+        #   1. Trade is in a loss AND loss > 0.4×ATR  — meaningful move against, not noise
+        #   2. Loss has worsened vs last check (price still moving away)
+        #   3. RSI shows counter-direction momentum: for shorts RSI > 55 (bulls in control)
+        #                                            for longs  RSI < 45 (bears in control)
+        #   4. MACD histogram is pointing counter-direction (bullish for shorts, bearish for longs)
+        #   5. bars_in_trade >= 2 — at least one full bar has closed (avoids entry-bar noise)
+        #
+        # Action: close 60 % immediately and tighten remaining SL to just beyond
+        # entry (0.5×ATR) so the runner can only lose a small additional amount.
+        # One-shot guard (_counter_momentum_cut) prevents repeat fires per position.
+        if (not getattr(self, "_counter_momentum_cut", False)
+                and self.bars_in_trade >= 2
+                and len(self.close) >= 26):
+            try:
+                _loss = (
+                    (self.entry_price - current_price)   # short: profit is negative when price rises
+                    if self.side == "short"
+                    else (current_price - self.entry_price)  # long: profit is negative when price falls
+                )
+                _loss = -_loss  # positive = trade is losing
+
+                if _loss > 0.4 * atr_value:
+                    # RSI — use historical closes (updated each 1H bar by main loop)
+                    _rsi_series = talib.RSI(self.close, timeperiod=14)
+                    _rsi = _rsi_series[-1] if not np.isnan(_rsi_series[-1]) else 50.0
+
+                    # MACD histogram direction
+                    _, _, _macd_hist = talib.MACD(
+                        self.close, fastperiod=12, slowperiod=26, signalperiod=9
+                    )
+                    _h1 = _macd_hist[-1] if not np.isnan(_macd_hist[-1]) else 0.0
+                    _h2 = _macd_hist[-2] if not np.isnan(_macd_hist[-2]) else 0.0
+
+                    # Counter-momentum signals (from the perspective of "bears taking over" for shorts
+                    # or "bulls taking over" for longs)
+                    if self.side == "short":
+                        _rsi_counter   = _rsi > 55          # bulls in control
+                        _macd_counter  = _h1 > _h2 > 0      # histogram rising into positive = bullish
+                    else:
+                        _rsi_counter   = _rsi < 45          # bears in control
+                        _macd_counter  = _h1 < _h2 < 0      # histogram falling into negative = bearish
+
+                    if _rsi_counter and _macd_counter:
+                        self._counter_momentum_cut = True
+                        cut_size = min(0.60, self.remaining_position)
+                        if cut_size > 0:
+                            self.remaining_position = max(0.0, self.remaining_position - cut_size)
+                            # Tighten remaining SL to entry ± 0.5×ATR so runner risk is minimal
+                            if self.side == "short":
+                                _tight_sl = self.entry_price + 0.5 * atr_value
+                                if _tight_sl < self.current_stop_loss:
+                                    self.current_stop_loss = _tight_sl
+                            else:
+                                _tight_sl = self.entry_price - 0.5 * atr_value
+                                if _tight_sl > self.current_stop_loss:
+                                    self.current_stop_loss = _tight_sl
+                            logger.warning(
+                                f"[VTM] ⚔️ COUNTER-MOMENTUM CUT: {self.asset} {self.side.upper()} — "
+                                f"Loss=${_loss:.2f} ({_loss/atr_value:.2f}×ATR), "
+                                f"RSI={_rsi:.1f}, MACD hist {_h1:+.4f}. "
+                                f"Closing {cut_size:.0%} early. SL tightened to ${self.current_stop_loss:,.5f}."
+                            )
+                            return {"reason": ExitReason.TREND_INVALIDATION,
+                                    "price": current_price, "size": cut_size}
+            except Exception as _e:
+                logger.debug(f"[VTM] Counter-momentum cut check skipped: {_e}")
 
         # --- STEP 3: Greed Mode Accelerator ---
         # During extreme trends/volatility, collapse early targets so the runner
@@ -1307,6 +1419,7 @@ class VeteranTradeManager:
             "_greed_mode_activated": getattr(self, "_greed_mode_activated", False),
             "_early_scaled": getattr(self, "_early_scaled", False),
             "_time_stop_extended": getattr(self, "_time_stop_extended", False),
+            "_counter_momentum_cut": getattr(self, "_counter_momentum_cut", False),
             # Snapshot of the ADX-adjusted partial targets used at open — needed so
             # from_dict() can pass them to risk_config and avoid recalculation drift
             "partial_targets_snapshot": list(self.partial_targets),
@@ -1320,7 +1433,7 @@ class VeteranTradeManager:
         # bypass the leverage ceiling by leaving local_free_margin at 0.
         # All VTM state is fully overwritten from the stored dict immediately after.
         _restore_risk_config = {
-            "partial_targets": state.get("partial_targets_snapshot", [1.5, 3.0, 5.0]),
+            "partial_targets": state.get("partial_targets_snapshot", [1.0, 1.8, 3.0]),
             "partial_sizes": state.get("partial_sizes", [0.45, 0.30, 0.25]),
         }
         vtm = cls(
@@ -1353,6 +1466,7 @@ class VeteranTradeManager:
         vtm._greed_mode_activated = state.get("_greed_mode_activated", False)
         vtm._early_scaled = state.get("_early_scaled", False)
         vtm._time_stop_extended = state.get("_time_stop_extended", False)
+        vtm._counter_momentum_cut = state.get("_counter_momentum_cut", False)
         return vtm
 
     # ─────────────────────────────────────────────────────────────────────────

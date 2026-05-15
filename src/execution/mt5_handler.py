@@ -223,7 +223,10 @@ class MT5ExecutionHandler:
 
         if auto_sync_enabled and import_enabled:
             logger.info("[INIT] Auto-syncing enabled MT5 assets...")
-            mt5_assets = ["GOLD", "USTEC", "EURJPY", "EURUSD"]
+            mt5_assets = [
+                name for name, cfg in self.config.get("assets", {}).items()
+                if cfg.get("exchange", "mt5") == "mt5" and cfg.get("enabled", False)
+            ]
             for asset in mt5_assets:
                 if self.config["assets"].get(asset, {}).get("enabled", False):
                     symbol = self._resolve_symbol(asset)
@@ -281,9 +284,21 @@ class MT5ExecutionHandler:
                 # Simple mock prices for common assets
                 mock_prices = {
                     "XAUUSD": 2000.00,
+                    "XAUUSDm": 2000.00,
                     "USTEC": 15000.00,
+                    "USTECm": 15000.00,
                     "EURJPY": 160.00,
-                    "EURUSD": 1.1000
+                    "EURJPYm": 160.00,
+                    "EURUSD": 1.1000,
+                    "EURUSDm": 1.1000,
+                    "GBPUSD": 1.2700,
+                    "GBPUSDm": 1.2700,
+                    "USDJPY": 150.00,
+                    "USDJPYm": 150.00,
+                    "GBPAUD": 1.9200,
+                    "GBPAUDm": 1.9200,
+                    "USOIL": 75.00,
+                    "USOILm": 75.00,
                 }
                 # Handle suffixes like 'm'
                 base_symbol = symbol.replace("m", "")
