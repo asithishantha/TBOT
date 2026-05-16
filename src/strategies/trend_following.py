@@ -91,7 +91,6 @@ class TrendFollowingStrategy(BaseStrategy):
         df["sma_slow"] = ta.SMA(close, timeperiod=self.slow_ma)
         df["ema_fast"] = ta.EMA(close, timeperiod=self.fast_ma)
         df["ema_slow"] = ta.EMA(close, timeperiod=self.slow_ma)
-        df["ema_200"] = ta.EMA(close, timeperiod=200)
 
         # MA relationships
         df["ma_diff"] = df["sma_fast"] - df["sma_slow"]

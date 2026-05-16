@@ -45,6 +45,7 @@ from src.data.data_manager import DataManager
 from src.strategies.mean_reversion import MeanReversionStrategy
 from src.strategies.trend_following import TrendFollowingStrategy
 from src.strategies.ema_strategy import EMAStrategy
+from src.strategies.volume_orderflow import VolumeOrderFlowStrategy
 from src.execution.signal_aggregator import PerformanceWeightedAggregator
 from src.execution.binance_handler import BinanceExecutionHandler
 from src.execution.mt5_handler import MT5ExecutionHandler
@@ -728,6 +729,15 @@ class TradingBot:
                 except Exception as e:
                     logger.error(f"[FAIL] {asset_name} EMA Strategy: {e}")
 
+            # 4. Volume Order Flow Strategy
+            try:
+                cfg = strategy_cfgs.get("volume_order_flow", {}).get(asset_name, {})
+                self.strategies[asset_name]["volume_flow"] = VolumeOrderFlowStrategy(cfg)
+                logger.info(f"[OK] {asset_name}: Volume Order Flow")
+            except Exception as e:
+                logger.warning(f"[WARN] {asset_name}: Volume Order Flow failed: {e}")
+                self.strategies[asset_name]["volume_flow"] = None
+
             # Safe length check
             enabled_strats = self.strategies.get(asset_name, {})
             enabled_count = len(enabled_strats)
@@ -1148,6 +1158,7 @@ class TradingBot:
                         mean_reversion_strategy=strategies.get("mean_reversion"),
                         trend_following_strategy=strategies.get("trend_following"),
                         ema_strategy=strategies.get("ema_strategy"),
+                        volume_flow_strategy=strategies.get("volume_flow"),
                         asset_type=asset_name,
                         config=preset_config,
                         ai_validator=(
@@ -1229,6 +1240,7 @@ class TradingBot:
                         mean_reversion_strategy=strategies.get("mean_reversion"),
                         trend_following_strategy=strategies.get("trend_following"),
                         ema_strategy=strategies.get("ema_strategy"),
+                        volume_flow_strategy=strategies.get("volume_flow"),
                         asset_type=asset_name,
                         config=preset_config,
                         ai_validator=(
@@ -2285,13 +2297,28 @@ class TradingBot:
         if not self.telegram_bot or not self.telegram_bot._is_ready:
             return
         try:
+            # Stamp the REAL hybrid mode into details so Telegram shows
+            # "Engine: [PERF]" / "Engine: [COUNCIL]" based on what the
+            # hybrid selector is *actually* using for this asset — not
+            # whichever aggregator happened to run last during AI validation.
+            _details = dict(details or {})
+            if hasattr(self, "hybrid_selector"):
+                try:
+                    _real_mode = self.hybrid_selector.get_optimal_mode(
+                        asset, pd.DataFrame()
+                    ).get("mode", "")
+                    if _real_mode:
+                        _details["aggregator_mode"] = _real_mode
+                except Exception:
+                    pass  # leave details unchanged if lookup fails
+
             self._send_telegram_notification(
                 self.telegram_bot.notify_signal_blocked(
                     asset=asset,
                     signal=signal,
                     block_source=block_source,
                     block_reason=block_reason,
-                    details=details or {},
+                    details=_details,
                     price=price,
                 )
             )
@@ -2391,6 +2418,7 @@ class TradingBot:
                     mean_reversion_strategy=strategies.get("mean_reversion"),
                     trend_following_strategy=strategies.get("trend_following"),
                     ema_strategy=strategies.get("ema_strategy"),
+                    volume_flow_strategy=strategies.get("volume_flow"),
                     asset_type=asset_type,
                     config=preset_config,
                     ai_validator=ai_validator,
@@ -2455,6 +2483,7 @@ class TradingBot:
                     mean_reversion_strategy=strategies.get("mean_reversion"),
                     trend_following_strategy=strategies.get("trend_following"),
                     ema_strategy=strategies.get("ema_strategy"),
+                    volume_flow_strategy=strategies.get("volume_flow"),
                     asset_type=asset_type,
                     config=preset_config,
                     ai_validator=ai_validator,
@@ -2877,17 +2906,30 @@ class TradingBot:
         A dedicated loop for updating VTM positions at a high frequency.
         """
         logger.info("[VTM LOOP] Starting high-frequency VTM update loop.")
-        
+
         # Get the VTM update interval from config, default to 5 seconds
         update_interval = self.config["trading"].get("vtm_update_interval_seconds", 5)
+        # Periodic exchange reconciliation — detects positions closed directly on broker
+        reconcile_interval = self.config["trading"].get("exchange_reconcile_interval_seconds", 60)
         logger.info(f"[VTM LOOP] Update interval set to {update_interval} seconds.")
+        logger.info(f"[VTM LOOP] Exchange reconcile interval: {reconcile_interval} seconds.")
+
+        _last_reconcile = 0.0
 
         while self.is_running:
             try:
                 # Check if there are any positions to manage to avoid unnecessary work
                 if self.portfolio_manager and self.portfolio_manager.get_open_positions_count() > 0:
                     self._check_VTM_positions()
-                
+
+                    # Periodic ticket-level reconciliation against the broker.
+                    # Catches positions closed directly on the exchange mid-session
+                    # (previously only detected at bot restart).
+                    _now = time.time()
+                    if _now - _last_reconcile >= reconcile_interval:
+                        _last_reconcile = _now
+                        self._reconcile_exchange_positions()
+
                 # Sleep until the next update
                 time.sleep(update_interval)
 
@@ -2897,6 +2939,34 @@ class TradingBot:
                 time.sleep(60)
         
         logger.info("[VTM LOOP] VTM management loop has stopped.")
+
+    def _reconcile_exchange_positions(self):
+        """
+        Ticket-level reconciliation against the broker.
+        Runs every ~60 seconds from the VTM loop to detect positions
+        closed directly on the exchange (without going through the bot).
+
+        Previously this only ran at startup; any position closed on the
+        broker mid-session would remain stale in the portfolio tracker
+        until the next bot restart, corrupting risk calculations.
+        """
+        try:
+            if not self.mt5_handler:
+                return
+            for asset_name, asset_cfg in self.config.get("assets", {}).items():
+                if not asset_cfg.get("enabled", False):
+                    continue
+                if asset_cfg.get("exchange", "mt5") != "mt5":
+                    continue
+                symbol = self._resolve_symbol(asset_name)
+                if not symbol:
+                    continue
+                positions = self.portfolio_manager.get_asset_positions(asset_name)
+                if not positions:
+                    continue
+                self.mt5_handler.sync_positions_with_mt5(asset_name, symbol)
+        except Exception as e:
+            logger.error(f"[RECONCILE] Periodic reconcile error: {e}")
 
     def _check_VTM_positions(self):
         """
@@ -3006,8 +3076,9 @@ class TradingBot:
                     else:
                         vtm_result = handler.check_and_update_positions_VTM(asset_name, df_4h=df_4h)
 
-                    # ✅ Handle Pyramid Requests
-                    if isinstance(vtm_result, dict) and "pyramid_requests" in vtm_result:
+                    # ✅ Handle Pyramid Requests (gated by config flag)
+                    _pyramiding_on = self.config.get("trading", {}).get("vtm_pyramiding_enabled", True)
+                    if _pyramiding_on and isinstance(vtm_result, dict) and "pyramid_requests" in vtm_result:
                         for req in vtm_result["pyramid_requests"]:
                             logger.info(f"[VTM LOOP] 🗼 Executing PYRAMID for {asset_name} ({req['side'].upper()})")
                             
@@ -3268,6 +3339,43 @@ class TradingBot:
                     pass
             return False
 
+        # ── DAILY PROFIT LOCK ─────────────────────────────────────────────────
+        # Two-tier system:
+        #   soft_lock  → scale position sizing to 50% (still trades, but smaller)
+        #   hard_lock  → block all new entries for the rest of the day
+        # Both are expressed as % of session_start_equity in config.
+        # Set either to 0 to disable that tier.
+        _profit_lock_cfg = risk_cfg.get("daily_profit_lock", {})
+        _soft_pct = _profit_lock_cfg.get("soft_lock_pct", 0.0)
+        _hard_pct = _profit_lock_cfg.get("hard_lock_pct", 0.0)
+        if _pm.session_start_equity and _pm.session_start_equity > 0:
+            _realized_gain = max(0.0, _pm.realized_pnl_today)
+            _daily_profit_pct = _realized_gain / _pm.session_start_equity
+        else:
+            _daily_profit_pct = 0.0
+
+        if _hard_pct > 0 and _daily_profit_pct >= _hard_pct:
+            self._last_limit_reason = (
+                f"Daily profit hard-lock: realized {_daily_profit_pct:.2%} ≥ {_hard_pct:.2%} target. "
+                f"No new entries until next session."
+            )
+            logger.warning(
+                f"[PROFIT LOCK] Hard lock active — realized {_daily_profit_pct:.2%} ≥ {_hard_pct:.2%}. "
+                f"Blocking new entries."
+            )
+            return False
+
+        if _soft_pct > 0 and _daily_profit_pct >= _soft_pct:
+            # Flag used downstream in execute_signal() to halve the position size
+            self._profit_soft_lock_active = True
+            logger.info(
+                f"[PROFIT LOCK] Soft lock active — realized {_daily_profit_pct:.2%} ≥ {_soft_pct:.2%}. "
+                f"Sizing reduced to 50%."
+            )
+        else:
+            self._profit_soft_lock_active = False
+        # ──────────────────────────────────────────────────────────────────────
+
         trading_cfg = self.config.get("trading", {})
         if trading_cfg.get("allow_simultaneous_positions", True):
             max_positions = trading_cfg.get("max_simultaneous_positions", 2)
@@ -3384,6 +3492,20 @@ class TradingBot:
                 logger.info(f"[MARKET] {asset_name}: Rollover Dead Zone (21:30-23:30 UTC) — Blocking entry.")
                 self.last_market_status_log[asset_name] = current_hour
             return False
+
+        # 4. Preferred session filter — blocks entries during low-liquidity hours
+        # per asset (e.g. no GBPAUD during late Asian session, no GOLD outside
+        # London/NY).  Controlled by trading.session_filter_enabled in config.
+        if self.config.get("trading", {}).get("session_filter_enabled", True):
+            if not MarketHours.is_preferred_session(asset_name):
+                current_hour = datetime.now().hour
+                if self.last_market_status_log.get(f"{asset_name}_session") != current_hour:
+                    logger.info(
+                        f"[MARKET] {asset_name}: Outside preferred session window — skipping entry. "
+                        f"(UTC hour: {MarketHours.get_gmt_time().hour:02d}:00)"
+                    )
+                    self.last_market_status_log[f"{asset_name}_session"] = current_hour
+                return False
 
         return True
     @handle_errors(
@@ -3554,6 +3676,50 @@ class TradingBot:
                 )
 
             # ============================================================
+            # ACTIVE-POSITION COUNTER-DIRECTION SUPPRESSION
+            # If the signal opposes an existing position on this asset, kill
+            # it here — before it propagates through the MTF filter, Telegram
+            # notifications, and shadow-trading logic.  This prevents noisy
+            # "Signal Blocked" messages and removes unnecessary compute.
+            #
+            # Logic:
+            #   Active SHORT  + new BUY  signal  → suppress
+            #   Active LONG   + new SELL signal  → suppress
+            #
+            # Hedging exception: if allow_simultaneous_long_short is enabled
+            # AND the regime is NEUTRAL we still allow the counter signal
+            # (intentional hedges in directionless markets).  In a confirmed
+            # BEARISH/BULLISH regime we suppress regardless of hedge config.
+            # ============================================================
+            if signal != 0:
+                _active = self.portfolio_manager.get_asset_positions(asset_name)
+                if _active:
+                    _active_sides = {p.side for p in _active}  # e.g. {"short"}
+                    _new_side = "long" if signal == 1 else "short"
+                    _opposite = "short" if _new_side == "long" else "long"
+
+                    if _opposite in _active_sides:
+                        # Determine if regime is confirmed directional
+                        _regime_data = getattr(self, "_current_regime_data", {}).get(asset_name, {})
+                        _regime_confirmed = _regime_data.get("is_bullish") or _regime_data.get("is_bearish")
+                        _hedging_ok = (
+                            self.config.get("trading", {}).get("allow_simultaneous_long_short", False)
+                            and not _regime_confirmed
+                        )
+
+                        if not _hedging_ok:
+                            logger.info(
+                                f"[SUPPRESS] {asset_name}: {_new_side.upper()} signal suppressed — "
+                                f"active {_opposite.upper()} position exists. "
+                                f"Regime: {_regime_data.get('regime', 'NEUTRAL')}. "
+                                f"Counter-direction evaluation skipped."
+                            )
+                            signal = 0
+                            # Mark as silent suppression so the HOLD handler does
+                            # not fire a Telegram "Signal Blocked" notification.
+                            details["counter_direction_suppressed"] = True
+
+            # ============================================================
             # ✅ FIX: Apply MTF Filtering AFTER signal generation
             # This applies to ALL aggregator types (hybrid, council, performance)
             # ============================================================
@@ -3690,14 +3856,51 @@ class TradingBot:
             # 3. Check HOLD Signal
             # ============================================================
             if signal == 0:
+                # Counter-direction suppression: signal was killed upstream because
+                # an active position in the opposite direction already exists.
+                # Log at DEBUG only — no Telegram notification, no shadow trade.
+                if details.get("counter_direction_suppressed"):
+                    logger.debug(
+                        f"[SUPPRESS] {asset_name}: counter-direction signal silently dropped."
+                    )
+                    return
+
                 # Distinguish aggregator/AI rejection from a natural HOLD
                 original_sig = details.get("original_signal", 0)
                 reasoning = details.get("reasoning", "")
                 ai_details = details.get("ai_validation", {})
-                
+
+                # ── Counter-direction suppression (aggregator-rejected path) ──
+                # The aggregator may return signal=0 having internally scored a
+                # counter-direction signal that it rejected below threshold.
+                # original_sig captures the intended direction.  If that direction
+                # opposes an active position in a confirmed regime, drop silently —
+                # same logic as the pre-filter but applied to post-aggregator rejects.
+                if original_sig != 0:
+                    _active = self.portfolio_manager.get_asset_positions(asset_name)
+                    if _active:
+                        _orig_side  = "long" if original_sig == 1 else "short"
+                        _opp_side   = "short" if _orig_side == "long" else "long"
+                        _active_sides = {p.side for p in _active}
+                        if _opp_side in _active_sides:
+                            _regime_data      = getattr(self, "_current_regime_data", {}).get(asset_name, {})
+                            _regime_confirmed = _regime_data.get("is_bullish") or _regime_data.get("is_bearish")
+                            _hedging_ok = (
+                                self.config.get("trading", {}).get("allow_simultaneous_long_short", False)
+                                and not _regime_confirmed
+                            )
+                            if not _hedging_ok:
+                                logger.debug(
+                                    f"[SUPPRESS] {asset_name}: aggregator-rejected {_orig_side.upper()} "
+                                    f"signal silently dropped (active {_opp_side.upper()} position, "
+                                    f"regime={_regime_data.get('regime','NEUTRAL')})."
+                                )
+                                return  # No Telegram, no shadow trade, no further processing
+                # ─────────────────────────────────────────────────────────────
+
                 # If we had an original signal that was zeroed out, or if reasoning indicates a block
                 is_blocked = (original_sig != 0) or (reasoning and "hold" not in reasoning.lower())
-                
+
                 if is_blocked:
                     # Determine block source and reason
                     block_source = "Signal Aggregator"
@@ -3725,6 +3928,29 @@ class TradingBot:
                             block_reason = "ADX indicates insufficient trend strength"
 
                     logger.info(f"[HOLD] {asset_name}: Signal BLOCKED by {block_source} ({block_reason})")
+
+                    # ── Counter-direction suppression (HOLD path) ──────────────────
+                    # When the aggregator/council rejects without setting original_signal,
+                    # original_sig=0 and the upstream suppression check never fires.
+                    # Guard here: if there are active positions in the OPPOSITE direction
+                    # AND the regime is confirmed, this blocked notification is just noise
+                    # — silently drop it rather than pinging Telegram.
+                    _supp_active = self.portfolio_manager.get_asset_positions(asset_name)
+                    if _supp_active:
+                        _supp_regime = getattr(self, "_current_regime_data", {}).get(asset_name, {})
+                        _supp_regime_confirmed = _supp_regime.get("is_bullish") or _supp_regime.get("is_bearish")
+                        _hedging_allowed = (
+                            self.config.get("trading", {}).get("allow_simultaneous_long_short", False)
+                            and not _supp_regime_confirmed
+                        )
+                        if _supp_regime_confirmed and not _hedging_allowed:
+                            logger.debug(
+                                f"[SUPPRESS] {asset_name}: blocked signal silently dropped "
+                                f"(active position + confirmed regime — counter-direction noise)."
+                            )
+                            return
+                    # ─────────────────────────────────────────────────────────────
+
                     self._notify_blocked(
                         asset=asset_name,
                         signal=original_sig or 1, # fallback if original_sig is missing
@@ -3865,6 +4091,10 @@ class TradingBot:
                 return
 
             logger.info(f"[SAFETY] ✓ Final validation passed for {asset_name}. Executing...")
+
+            # Propagate soft profit-lock flag so handlers can halve sizing
+            if getattr(self, "_profit_soft_lock_active", False):
+                details["profit_soft_lock_active"] = True
 
             # ============================================================
             # 6. Execute Trade

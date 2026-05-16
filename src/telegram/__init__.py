@@ -3202,7 +3202,11 @@ class TradingTelegramBot:
             regime     = details.get("regime", "")
             trade_type = details.get("trade_type", "")
             agg_mode   = details.get("aggregator_mode", "")
-            engine_tag = "[COUNCIL]" if agg_mode == "council" else "[PERF]"
+            engine_tag = (
+                "[COUNCIL]" if agg_mode == "council"
+                else "[HYBRID]" if agg_mode == "hybrid"
+                else "[PERF]"
+            )
 
             quality_bar_filled = int(quality * 10)
             quality_bar = "█" * quality_bar_filled + "░" * (10 - quality_bar_filled)

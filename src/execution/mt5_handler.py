@@ -483,12 +483,15 @@ class MT5ExecutionHandler:
                     f"[STRATEGIC] Requesting risk budget from Portfolio Manager for {asset}"
                 )
                 logger.info(f"{'='*80}")
+                # Pass signal direction so portfolio manager can apply USD clustering malus
+                self.portfolio_manager._pending_signal_side = signal
                 risk_pct = self.portfolio_manager.get_risk_budget(
                     asset=asset,
                     strategy_type=trade_type,
                     confidence_score=signal_details.get("mode_confidence"),
                     market_condition=signal_details.get("regime")
                 )
+                self.portfolio_manager._pending_signal_side = None
 
                 if risk_pct <= 0:
                     logger.error(
@@ -502,6 +505,12 @@ class MT5ExecutionHandler:
                 if mtf_multiplier != 1.0:
                     risk_pct *= mtf_multiplier
                     logger.info(f"[RISK] MTF multiplier applied: {mtf_multiplier:.1f}x → risk_pct={risk_pct:.4f}")
+
+                # Daily profit soft-lock: halve position size once realized PnL
+                # crosses the soft-lock threshold (set in config.risk.daily_profit_lock)
+                if signal_details and signal_details.get("profit_soft_lock_active"):
+                    risk_pct *= 0.5
+                    logger.info(f"[PROFIT LOCK] Soft lock: sizing halved → risk_pct={risk_pct:.4f}")
 
                 logger.info(f"[STRATEGIC] ✓ Risk budget approved: {risk_pct:.3%}")
 
@@ -2166,13 +2175,28 @@ class MT5ExecutionHandler:
 
             # ================================================================
             # SCENARIO 2: CLEANUP — portfolio tracks positions MT5 no longer has
+            # Ticket-level check: catches partial closes (e.g. one of two positions
+            # closed directly on the exchange while the bot was running).
             # ================================================================
-            if portfolio_count > 0 and mt5_count == 0:
-                logger.warning(f"[SYNC] Portfolio mismatch for {asset}: Portfolio={portfolio_count}, MT5=0")
-                current_price = self.get_current_price(symbol)
-                for pos in portfolio_positions:
-                    self.portfolio_manager.close_position(position_id=pos.position_id, exit_price=current_price, reason="sync_missing_mt5")
-                return True
+            if portfolio_count > 0:
+                live_tickets = {p.ticket for p in (mt5_positions or [])}
+                current_price = None  # Lazy fetch — only if needed
+
+                for pos in list(portfolio_positions):
+                    if pos.mt5_ticket is None:
+                        continue  # Position has no ticket (paper / imported without ticket)
+                    if pos.mt5_ticket not in live_tickets:
+                        if current_price is None:
+                            current_price = self.get_current_price(symbol)
+                        logger.warning(
+                            f"[SYNC] ⚠️ Ticket #{pos.mt5_ticket} ({asset} {pos.side.upper()}) "
+                            f"no longer on MT5 — closing in portfolio (externally closed)."
+                        )
+                        self.portfolio_manager.close_position(
+                            position_id=pos.position_id,
+                            exit_price=current_price,
+                            reason="closed_on_exchange",
+                        )
 
             return True
 

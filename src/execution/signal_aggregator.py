@@ -35,6 +35,7 @@ Adds Governor + Volatility + Sniper checks to existing aggregator
         mean_reversion_strategy,
         trend_following_strategy,
         ema_strategy,
+        volume_flow_strategy=None,
         asset_type: str = "BTC",
         config: Dict = None,
         ai_validator=None,
@@ -49,6 +50,7 @@ Adds Governor + Volatility + Sniper checks to existing aggregator
         self.s_mean_reversion = mean_reversion_strategy
         self.s_trend_following = trend_following_strategy
         self.s_ema = ema_strategy
+        self.s_volume_flow = volume_flow_strategy
         self.asset_type = asset_type.upper()
         self.use_macro_governor = use_macro_governor
         self.use_gatekeeper = use_gatekeeper
@@ -194,6 +196,7 @@ Adds Governor + Volatility + Sniper checks to existing aggregator
                 "sell_threshold": 0.26,
                 "two_strategy_bonus": 0.25,
                 "three_strategy_bonus": 0.30,
+                "four_strategy_bonus": 0.35,
                 "bull_buy_boost": 0.25,
                 "bull_sell_penalty": 0.20,
                 "bear_sell_boost": 0.25,
@@ -216,6 +219,7 @@ Adds Governor + Volatility + Sniper checks to existing aggregator
                 "sell_threshold": 0.22,
                 "two_strategy_bonus": 0.22,
                 "three_strategy_bonus": 0.28,
+                "four_strategy_bonus": 0.35,
                 "bull_buy_boost": 0.20,
                 "bull_sell_penalty": 0.12,
                 "bear_sell_boost": 0.20,
@@ -233,6 +237,7 @@ Adds Governor + Volatility + Sniper checks to existing aggregator
                 "sell_threshold": 0.24,
                 "two_strategy_bonus": 0.25,
                 "three_strategy_bonus": 0.30,
+                "four_strategy_bonus": 0.35,
                 "bull_buy_boost": 0.22,
                 "bull_sell_penalty": 0.15,
                 "bear_sell_boost": 0.22,
@@ -1871,10 +1876,37 @@ Adds Governor + Volatility + Sniper checks to existing aggregator
             total_score -= penalty
             components.append(f"EMA_oppose:-{penalty:.3f}")
 
+        # --- VolumeFlow vote ---
+        if self.s_volume_flow is not None:
+            try:
+                vf_signal, vf_conf = self.s_volume_flow.generate_signal(df)
+                if vf_signal == target_signal and vf_conf >= min_conf:
+                    effective_conf = max(vf_conf, min_conf)
+                    contribution = effective_conf * (1 - self.config.get("opposition_penalty", 0.40))
+                    total_score += contribution
+                    components.append(f"VF_agree:{contribution:.3f}")
+                    agreement_count += 1
+                elif vf_signal != 0 and vf_signal != target_signal:
+                    penalty = vf_conf * self.config.get("opposition_penalty", 0.40)
+                    total_score -= penalty
+                    components.append(f"VF_oppose:-{penalty:.3f}")
+                elif vf_signal == 0:
+                    effective_conf = max(vf_conf, min_conf)
+                    hold_contribution = effective_conf * hold_contrib
+                    total_score += hold_contribution
+                    if hold_contribution > 0:
+                        components.append(f"VF_hold:{hold_contribution:.3f}")
+            except Exception as _vf_e:
+                logger.debug(f"[AGG] VolumeFlow signal error: {_vf_e}")
+
         explanation = " + ".join(components) if components else "no_agreement"
 
         # Agreement bonus — tiered (two_strategy_bonus and three_strategy_bonus now both active)
-        if agreement_count == 3:
+        if agreement_count == 4:
+            bonus = self.config.get("four_strategy_bonus", self.config.get("three_strategy_bonus", 0.35))
+            total_score += bonus
+            explanation += f" + bonus4({bonus:.2f})"
+        elif agreement_count == 3:
             bonus = self.config.get("three_strategy_bonus", self.config["two_strategy_bonus"])
             total_score += bonus
             explanation += f" + bonus3({bonus:.2f})"

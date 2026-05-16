@@ -1050,7 +1050,25 @@ class PortfolioManager:
                     logger.info(f"  Risk reduced to {correlation_malus:.0%} of original budget")
             
             risk_pct *= correlation_malus
-            
+
+            # ================================================================
+            # STEP 3b: USD Directional Clustering Malus
+            # Detects when multiple open positions all express the same macro
+            # trade (e.g. 3× USD long: EURUSD SHORT + GBPUSD SHORT + GOLD SHORT).
+            # The existing Pearson correlation (Step 3) catches price-level
+            # correlation but needs 30 bars of price history.  This check is
+            # instantaneous and semantics-driven — no history required.
+            # ================================================================
+            _side_for_new_trade = "long" if getattr(self, "_pending_signal_side", None) != -1 else "short"
+            # _pending_signal_side is set by mt5_handler before calling get_risk_budget.
+            # Fall back gracefully if not set — no penalty in that case.
+            if hasattr(self, "_pending_signal_side") and self._pending_signal_side is not None:
+                _side_for_new_trade = "long" if self._pending_signal_side == 1 else "short"
+                usd_multiplier = self.get_usd_directional_multiplier(asset, _side_for_new_trade)
+                if usd_multiplier < 1.0:
+                    logger.info(f"  USD Directional Malus: ×{usd_multiplier:.2f}")
+                risk_pct *= usd_multiplier
+
             # ================================================================
             # STEP 4: Drawdown Shield
             # ================================================================
@@ -1148,6 +1166,8 @@ class PortfolioManager:
             logger.info(f"    Base:         {base_risk:.3%}")
             logger.info(f"    Strategy:     ×{strategy_multiplier:.2f}")
             logger.info(f"    Correlation:  ×{correlation_malus:.2f}")
+            _usd_m = locals().get("usd_multiplier", 1.0)
+            logger.info(f"    USD cluster:  ×{_usd_m:.2f}")
             logger.info(f"    Drawdown:     ×{drawdown_malus:.2f}")
             logger.info(f"    Final:        {risk_pct:.3%}")
             logger.info(f"  → ${self.current_capital * risk_pct:,.2f} at risk\n")
@@ -1923,6 +1943,71 @@ class PortfolioManager:
             Number of open positions
         """
         return len(self.get_asset_positions(asset, side))
+
+    # ── USD directional exposure map ──────────────────────────────────────
+    # Maps (ASSET, side) to "usd_long", "usd_short", or "neutral".
+    # Used by get_usd_directional_multiplier() to detect macro-exposure
+    # clustering when multiple positions all express the same USD view.
+    _USD_DIRECTION: dict = {
+        ("EURUSD",  "long"):  "usd_short",
+        ("EURUSD",  "short"): "usd_long",
+        ("GBPUSD",  "long"):  "usd_short",
+        ("GBPUSD",  "short"): "usd_long",
+        ("USDJPY",  "long"):  "usd_long",
+        ("USDJPY",  "short"): "usd_short",
+        ("EURJPY",  "long"):  "neutral",
+        ("EURJPY",  "short"): "neutral",
+        ("GBPAUD",  "long"):  "neutral",
+        ("GBPAUD",  "short"): "neutral",
+        ("GOLD",    "long"):  "usd_short",
+        ("GOLD",    "short"): "usd_long",
+        ("USOIL",   "long"):  "usd_short",
+        ("USOIL",   "short"): "usd_long",
+        ("USTEC",   "long"):  "neutral",
+        ("USTEC",   "short"): "neutral",
+        ("BTC",     "long"):  "neutral",
+        ("BTC",     "short"): "neutral",
+    }
+
+    def get_usd_directional_multiplier(self, asset: str, new_side: str) -> float:
+        """
+        Returns a sizing multiplier that shrinks when multiple open positions
+        already express the same USD directional view as the proposed trade.
+
+        Example: EURUSD SHORT + GBPUSD SHORT already open → both are "usd_long".
+        A third "usd_long" trade (e.g. GOLD SHORT) gets multiplied by 0.65.
+
+        Multipliers:
+          0 same-direction positions already open → 1.0   (no penalty)
+          1 same-direction position already open  → 0.80  (2nd in cluster)
+          2+ same-direction positions already open → 0.60  (3rd+ in cluster)
+        """
+        new_direction = self._USD_DIRECTION.get((asset.upper(), new_side.lower()), "neutral")
+        if new_direction == "neutral":
+            return 1.0  # No USD clustering concern for cross/index/crypto
+
+        same_direction_count = 0
+        for pos in self.positions.values():
+            pos_direction = self._USD_DIRECTION.get(
+                (pos.asset.upper(), pos.side.lower()), "neutral"
+            )
+            if pos_direction == new_direction:
+                same_direction_count += 1
+
+        if same_direction_count == 0:
+            return 1.0
+        elif same_direction_count == 1:
+            logger.info(
+                f"  [CORRELATION] USD directional cluster: 1 existing {new_direction} "
+                f"position → sizing ×0.80"
+            )
+            return 0.80
+        else:
+            logger.warning(
+                f"  [CORRELATION] USD directional cluster: {same_direction_count} existing "
+                f"{new_direction} positions → sizing ×0.60"
+            )
+            return 0.60
 
     def check_correlation(self, asset1: str, asset2: str) -> float:
         """Calculate correlation between two assets"""

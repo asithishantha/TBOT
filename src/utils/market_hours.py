@@ -314,6 +314,64 @@ class MarketHours:
             return MarketHours.get_eastern_time() + timedelta(seconds=seconds)
 
 
+    # ── Preferred entry sessions per asset (UTC hours) ────────────────────
+    # Outside these windows liquidity thins, spreads widen, and signals
+    # from 1H bars formed during low-volume periods are unreliable.
+    # Key: asset name (uppercase). Value: list of (open_utc, close_utc) tuples.
+    # An entry is allowed if the current UTC hour falls within ANY listed window.
+    #
+    # Session reference (UTC):
+    #   Tokyo:   00:00 – 09:00
+    #   London:  07:00 – 16:00
+    #   New York:13:00 – 22:00
+    #   Overlap: 13:00 – 16:00  ← highest liquidity for FX
+    PREFERRED_SESSIONS: dict = {
+        # GOLD: London + NY only. Asian session gaps are dangerous.
+        "GOLD":   [(7, 21)],
+        # Major FX: avoid dead Asian hours (00:00–06:00 UTC)
+        "EURUSD": [(7, 21)],
+        "GBPUSD": [(7, 21)],
+        "EURJPY": [(7, 21)],
+        # JPY pairs — Tokyo is fine, so allow Asian session too
+        "USDJPY": [(0, 9), (7, 21)],
+        # GBPAUD: best during London/Sydney overlap + London session.
+        # Spreads blow out in late NY/Asian hours.
+        "GBPAUD": [(0, 17)],
+        # Indices and commodities: US session driven
+        "USTEC":  [(13, 21)],
+        "USOIL":  [(7, 21)],
+        # BTC: 24/7 but enforce a minimum liquidity window
+        "BTC":    [(0, 24)],  # no restriction by default
+    }
+
+    @staticmethod
+    def is_preferred_session(asset_name: str) -> bool:
+        """
+        Returns True if the current UTC hour is within the preferred
+        trading session for this asset.
+
+        Called from check_market_hours() when session_filter_enabled is True
+        in config.  Assets not in PREFERRED_SESSIONS are allowed through.
+        """
+        windows = MarketHours.PREFERRED_SESSIONS.get(asset_name.upper())
+        if not windows:
+            return True  # No restriction defined — allow
+
+        now = MarketHours.get_gmt_time()
+        utc_hour = now.hour
+
+        for (open_h, close_h) in windows:
+            if open_h < close_h:
+                if open_h <= utc_hour < close_h:
+                    return True
+            else:
+                # Overnight window (e.g. 22 – 06)
+                if utc_hour >= open_h or utc_hour < close_h:
+                    return True
+
+        return False
+
+
 # Convenience functions
 def should_trade_btc() -> bool:
     """Check if BTC trading is allowed (Weekend Gate applied)"""

@@ -409,17 +409,17 @@ class EMAStrategy(BaseStrategy):
                 bullish_score += 2                                # EMA separation
             if self.use_price_confirmation and close > ema_fast_val and close > ema_slow_val:
                 bullish_score += 1                                # Price above both EMAs
-            if macd_hist_val > 0:
-                bullish_score += 1                                # MACD confirms momentum
+            if rsi > 50:
+                bullish_score += 1                                # RSI above midpoint = sustained bullish pressure
             if 40 < rsi < 70:
                 bullish_score += 1                                # RSI not overbought
             if self.use_volume_filter and high_volume == 1:
                 bullish_score += 1                                # Volume surge
-            if adx > 25:
-                bullish_score += 1                                # Strong trend (ADX)
+            if ema_fast_slope > 0:
+                bullish_score += 1                                # EMA fast slope rising
             # Trend continuation (no crossover required)
             if (close > ema_fast_val and ema_fast_slope > 0
-                    and rsi < 70 and macd_hist_val > 0 and adx > 20):
+                    and rsi < 70):
                 bullish_score += 2
 
             # --- Bearish conditions -----------------------------------------
@@ -429,17 +429,17 @@ class EMAStrategy(BaseStrategy):
                 bearish_score += 2                                # EMA separation
             if self.use_price_confirmation and close < ema_fast_val and close < ema_slow_val:
                 bearish_score += 1                                # Price below both EMAs
-            if macd_hist_val < 0:
-                bearish_score += 1                                # MACD confirms momentum
+            if rsi < 50:
+                bearish_score += 1                                # RSI below midpoint = sustained bearish pressure
             if 30 < rsi < 60:
                 bearish_score += 1                                # RSI not oversold
             if self.use_volume_filter and high_volume == 1:
                 bearish_score += 1                                # Volume surge
-            if adx > 25:
-                bearish_score += 1                                # Strong trend (ADX)
+            if ema_fast_slope < 0:
+                bearish_score += 1                                # EMA fast slope falling
             # Trend continuation (no crossover required)
             if (close < ema_fast_val and ema_fast_slope < 0
-                    and rsi > 30 and macd_hist_val < 0 and adx > 20):
+                    and rsi > 30):
                 bearish_score += 2
 
             # --- Determine preliminary signal --------------------------------
@@ -563,9 +563,8 @@ class EMAStrategy(BaseStrategy):
             "ema_diff_pct",
             "ema_cross",
             "rsi",
-            "macd_hist",
+            "ema_fast_slope",
             "high_volume",
-            "adx",
         ]
         df = df.dropna(subset=required_cols)
 
@@ -592,9 +591,8 @@ class EMAStrategy(BaseStrategy):
         ema_diff_pct = df["ema_diff_pct"].values
         ema_cross = df["ema_cross"].values.astype(int)
         rsi = df["rsi"].values
-        macd_hist = df["macd_hist"].values
+        ema_fast_slope = df["ema_fast_slope"].values
         high_volume = df["high_volume"].values
-        adx = df["adx"].values
 
         labels = pd.Series(0, index=df.index)
         lookforward = 5
@@ -632,8 +630,8 @@ class EMAStrategy(BaseStrategy):
             if close[i] > ema_fast[i] and close[i] > ema_slow[i]:
                 bullish_score += 1
 
-            # MACD alignment
-            if not np.isnan(macd_hist[i]) and macd_hist[i] > 0:
+            # RSI above midpoint — sustained bullish pressure
+            if not np.isnan(rsi[i]) and rsi[i] > 50:
                 bullish_score += 1
 
             # RSI not overbought
@@ -644,19 +642,17 @@ class EMAStrategy(BaseStrategy):
             if high_volume[i] == 1:
                 bullish_score += 1
 
-            # Strong trend (ADX)
-            if not np.isnan(adx[i]) and adx[i] > 25:
+            # EMA fast slope rising — momentum behind the move
+            if not np.isnan(ema_fast_slope[i]) and ema_fast_slope[i] > 0:
                 bullish_score += 1
-                
-            # For LIVE TRADING (no future data):
+
+            # Trend continuation — matches live signal logic exactly
             if (
-                (close[i] > ema_fast[i]) and  # Price above 50 EMA
-                (ema_fast[i] > ema_fast[i-1]) and  # 50 EMA rising
-                (rsi[i] < 70) and  # Not overbought
-                (macd_hist[i] > 0) and  # MACD confirms momentum
-                (adx[i] > 20)  # Strong trend
+                (close[i] > ema_fast[i]) and       # Price above fast EMA
+                (not np.isnan(ema_fast_slope[i]) and ema_fast_slope[i] > 0) and  # EMA rising
+                (not np.isnan(rsi[i]) and rsi[i] < 70)                           # Not overbought
             ):
-                bullish_score += 2  # Trend continuation
+                bullish_score += 2
 
             # === BEARISH CONDITIONS (NO FUTURE DATA IN SCORING) ===
             bearish_score = 0
@@ -673,8 +669,8 @@ class EMAStrategy(BaseStrategy):
             if close[i] < ema_fast[i] and close[i] < ema_slow[i]:
                 bearish_score += 1
 
-            # MACD alignment
-            if not np.isnan(macd_hist[i]) and macd_hist[i] < 0:
+            # RSI below midpoint — sustained bearish pressure
+            if not np.isnan(rsi[i]) and rsi[i] < 50:
                 bearish_score += 1
 
             # RSI not oversold
@@ -685,9 +681,17 @@ class EMAStrategy(BaseStrategy):
             if high_volume[i] == 1:
                 bearish_score += 1
 
-            # Strong trend (ADX)
-            if not np.isnan(adx[i]) and adx[i] > 25:
+            # EMA fast slope falling — momentum behind the move
+            if not np.isnan(ema_fast_slope[i]) and ema_fast_slope[i] < 0:
                 bearish_score += 1
+
+            # Trend continuation — matches live signal logic exactly
+            if (
+                (close[i] < ema_fast[i]) and       # Price below fast EMA
+                (not np.isnan(ema_fast_slope[i]) and ema_fast_slope[i] < 0) and  # EMA falling
+                (not np.isnan(rsi[i]) and rsi[i] > 30)                           # Not oversold
+            ):
+                bearish_score += 2
 
             # === APPLY 4H CONTEXT ===
             if df_4h_aligned is not None:
