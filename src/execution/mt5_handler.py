@@ -2186,16 +2186,47 @@ class MT5ExecutionHandler:
                     if pos.mt5_ticket is None:
                         continue  # Position has no ticket (paper / imported without ticket)
                     if pos.mt5_ticket not in live_tickets:
-                        if current_price is None:
-                            current_price = self.get_current_price(symbol)
                         logger.warning(
                             f"[SYNC] ⚠️ Ticket #{pos.mt5_ticket} ({asset} {pos.side.upper()}) "
-                            f"no longer on MT5 — closing in portfolio (externally closed)."
+                            f"no longer on MT5 — externally closed, fetching broker close data."
                         )
+
+                        # ── Query MT5 deal history for the authoritative fill price
+                        # and P&L.  _fetch_broker_close_data polls with a short
+                        # backoff so it handles the brief MT5 history lag after a close.
+                        broker_data = self._fetch_broker_close_data(pos.mt5_ticket)
+
+                        exit_price = None
+                        if broker_data:
+                            exit_price = broker_data.get("fill_price")
+                            logger.info(
+                                f"[SYNC] Broker close data for #{pos.mt5_ticket}: "
+                                f"fill=${exit_price}, profit=${broker_data.get('profit', 'n/a')}, "
+                                f"swap=${broker_data.get('swap', 0)}, "
+                                f"commission=${broker_data.get('commission', 0)}"
+                            )
+                        else:
+                            logger.debug(
+                                f"[SYNC] No broker deal found for #{pos.mt5_ticket} — "
+                                f"will fall back to current market price."
+                            )
+
+                        if exit_price is None or exit_price <= 0:
+                            # Deal history unavailable; use current market price as fallback
+                            if current_price is None:
+                                current_price = self.get_current_price(symbol)
+                            exit_price = current_price
+                            logger.debug(
+                                f"[SYNC] Falling back to market price ${exit_price} "
+                                f"for #{pos.mt5_ticket} P&L calc."
+                            )
+
                         self.portfolio_manager.close_position(
                             position_id=pos.position_id,
-                            exit_price=current_price,
+                            exit_price=exit_price,
                             reason="closed_on_exchange",
+                            already_closed_on_exchange=True,
+                            preloaded_broker_data=broker_data,
                         )
 
             return True

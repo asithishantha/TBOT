@@ -297,6 +297,11 @@ class MTFRegimeIntegration:
             _h1_tf = regime_status.timeframe_data.get("1h", {})
             regime_data = {
                 "regime": regime_status.consensus_regime,
+                # ✅ FIX: Duplicate under both keys so aggregators using either name work.
+                # signal_aggregator uses governor_data.get("consensus_regime", "UNKNOWN")
+                # council_aggregator uses governor_data.get("consensus_regime", "NEUTRAL")
+                # Previously only "regime" existed, causing both to always read the default.
+                "consensus_regime": regime_status.consensus_regime,
                 "regime_score": regime_status.score,
                 "is_bullish": regime_status.is_bullish,
                 "is_bearish": regime_status.is_bearish,

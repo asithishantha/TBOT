@@ -1210,6 +1210,7 @@ class TradingBot:
                         counter_trend_threshold=counter_threshold,
                         weight_structure=1.0,
                         weight_momentum=1.5,
+                        mtf_integration=self.mtf_integration,  # ✅ FIX: Wire MTF so _check_macro_regime works
                         performance_tracker=self.portfolio_manager.performance_tracker,
                         use_macro_governor=use_macro_gov,
                         use_gatekeeper=use_gatekeeper
@@ -1270,6 +1271,8 @@ class TradingBot:
                         counter_trend_threshold=counter_threshold,
                         weight_structure=1.0,
                         weight_momentum=1.5,
+                        mtf_integration=self.mtf_integration,  # ✅ FIX: Wire MTF so _check_macro_regime works
+                        performance_tracker=self.portfolio_manager.performance_tracker,
                         use_macro_governor=use_macro_gov,
                         use_gatekeeper=use_gatekeeper
                     )
@@ -2444,6 +2447,8 @@ class TradingBot:
                     counter_trend_threshold=counter_threshold,
                     weight_structure=1.0,
                     weight_momentum=1.5,
+                    mtf_integration=self.mtf_integration,  # ✅ FIX: Wire MTF so _check_macro_regime works
+                    performance_tracker=self.portfolio_manager.performance_tracker,
                     use_macro_governor=use_macro_gov,
                     use_gatekeeper=use_gatekeeper
                 )
@@ -2469,6 +2474,8 @@ class TradingBot:
                     config=preset_config,
                     trend_aligned_threshold=trend_threshold,
                     counter_trend_threshold=counter_threshold,
+                    mtf_integration=self.mtf_integration,  # ✅ FIX: Wire MTF so _check_macro_regime works
+                    performance_tracker=self.portfolio_manager.performance_tracker,
                     use_macro_governor=use_macro_gov,
                     use_gatekeeper=use_gatekeeper
                 )

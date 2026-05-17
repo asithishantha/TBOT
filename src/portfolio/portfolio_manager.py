@@ -2770,9 +2770,16 @@ class PortfolioManager:
         position_id: str = None,
         exit_price: float = None,
         reason: str = "manual",
+        already_closed_on_exchange: bool = False,
+        preloaded_broker_data: dict = None,
     ) -> Optional[Dict]:
         """
         ✅ FIXED: Close position - Validates exchange close before removing from portfolio
+
+        already_closed_on_exchange=True skips the exchange-close step entirely (use
+        when the position was externally closed, e.g. detected by MT5 sync).
+        preloaded_broker_data passes authoritative fill/P&L fetched from the broker's
+        deal history so the local P&L calculation uses the real exit price.
         """
         # Find position to close
         if position_id:
@@ -2817,9 +2824,22 @@ class PortfolioManager:
         # ================================================================
         exchange_closed = False
         close_error_msg = "Unknown handler error" # Default error message
-        broker_close_data = None  # holds dict with authoritative fill+profit
+        # Start with any broker data pre-fetched by the caller (e.g. MT5 sync
+        # detecting an externally-closed position via _fetch_broker_close_data).
+        broker_close_data = preloaded_broker_data  # may be None; overridden below if not pre-closed
 
-        if not self.is_paper_mode:
+        if already_closed_on_exchange:
+            # Position was already closed directly on the exchange (e.g. manually
+            # closed via the MT5/Binance terminal).  The sync loop detected the ticket
+            # is gone and fetched authoritative deal data via _fetch_broker_close_data.
+            # Skip the exchange-close attempt — trying to close a non-existent position
+            # would just error out and prevent the portfolio from being cleaned up.
+            exchange_closed = True
+            logger.info(
+                f"[CLOSE] Ticket #{getattr(position, 'mt5_ticket', 'N/A')} for "
+                f"{position.asset} was closed externally — skipping exchange-close step."
+            )
+        elif not self.is_paper_mode:
             asset_cfg = self.config["assets"].get(position.asset, {})
             exchange = asset_cfg.get("exchange", "binance")
             handler = self.execution_handlers.get(exchange)
@@ -3370,9 +3390,16 @@ class PortfolioManager:
         position_id: str = None,
         exit_price: float = None,
         reason: str = "manual",
+        already_closed_on_exchange: bool = False,
+        preloaded_broker_data: dict = None,
     ) -> Optional[Dict]:
         """
         ✅ FIXED: Close position - Validates exchange close before removing from portfolio
+
+        already_closed_on_exchange=True skips the exchange-close step entirely (use
+        when the position was externally closed, e.g. detected by MT5 sync).
+        preloaded_broker_data passes authoritative fill/P&L fetched from the broker's
+        deal history so the local P&L calculation uses the real exit price.
         """
         # Find position to close
         if position_id:
@@ -3417,9 +3444,22 @@ class PortfolioManager:
         # ================================================================
         exchange_closed = False
         close_error_msg = "Unknown handler error" # Default error message
-        broker_close_data = None  # holds dict with authoritative fill+profit
+        # Start with any broker data pre-fetched by the caller (e.g. MT5 sync
+        # detecting an externally-closed position via _fetch_broker_close_data).
+        broker_close_data = preloaded_broker_data  # may be None; overridden below if not pre-closed
 
-        if not self.is_paper_mode:
+        if already_closed_on_exchange:
+            # Position was already closed directly on the exchange (e.g. manually
+            # closed via the MT5/Binance terminal).  The sync loop detected the ticket
+            # is gone and fetched authoritative deal data via _fetch_broker_close_data.
+            # Skip the exchange-close attempt — trying to close a non-existent position
+            # would just error out and prevent the portfolio from being cleaned up.
+            exchange_closed = True
+            logger.info(
+                f"[CLOSE] Ticket #{getattr(position, 'mt5_ticket', 'N/A')} for "
+                f"{position.asset} was closed externally — skipping exchange-close step."
+            )
+        elif not self.is_paper_mode:
             asset_cfg = self.config["assets"].get(position.asset, {})
             exchange = asset_cfg.get("exchange", "binance")
             handler = self.execution_handlers.get(exchange)

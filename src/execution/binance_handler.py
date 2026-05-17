@@ -1639,6 +1639,76 @@ class BinanceExecutionHandler:
         except Exception as e:
             logger.error(f"Error checking positions: {e}", exc_info=True)
 
+    def _fetch_broker_close_data(
+        self,
+        symbol: str,
+        position_side: str,
+        opened_at=None,
+        max_attempts: int = 4,
+    ) -> dict:
+        """Query Binance Futures trade history for the authoritative fill price and
+        realized P&L of a recently-closed position.
+
+        Mirrors the MT5 handler's _fetch_broker_close_data interface so
+        portfolio_manager.close_position can consume it identically.
+
+        Returns dict with keys profit/swap/commission/fill_price, or None if the
+        closing trade cannot be found (caller falls back to market price).
+        """
+        import time as _time
+        from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+
+        # A closing trade has the OPPOSITE side to the open position
+        # (LONG position is closed by a SELL trade and vice-versa)
+        closing_trade_side = "SELL" if position_side.upper() in ("LONG", "BUY") else "BUY"
+
+        # Start scanning from position open time (or 2 h ago as a safe floor)
+        if opened_at is not None:
+            try:
+                start_ts = int(opened_at.timestamp() * 1000)
+            except Exception:
+                start_ts = None
+        if opened_at is None or start_ts is None:
+            start_ts = int((_dt.now(tz=_tz.utc) - _td(hours=2)).timestamp() * 1000)
+
+        for attempt in range(max_attempts):
+            try:
+                trades = self.client.futures_account_trades(
+                    symbol=symbol,
+                    startTime=start_ts,
+                    limit=100,
+                )
+                if trades:
+                    # Keep only trades that close the position (opposite side)
+                    closing = [
+                        t for t in trades
+                        if t.get("side", "").upper() == closing_trade_side
+                    ]
+                    if closing:
+                        # Most recent closing trade is the one we want
+                        t = sorted(closing, key=lambda x: int(x.get("time", 0)))[-1]
+                        realized_pnl = float(t.get("realizedPnl", 0.0))
+                        commission   = float(t.get("commission", 0.0))
+                        fill_price   = float(t.get("price", 0.0))
+                        return {
+                            "profit":     realized_pnl,
+                            "swap":       0.0,           # Binance has no swap (funding handled separately)
+                            "commission": -abs(commission),  # always a cost
+                            "fill_price": fill_price if fill_price > 0 else None,
+                        }
+            except Exception as _e:
+                logger.debug(
+                    f"[BINANCE] _fetch_broker_close_data attempt {attempt + 1}/{max_attempts} "
+                    f"for {symbol} failed: {_e}"
+                )
+            _time.sleep(0.25)
+
+        logger.debug(
+            f"[BINANCE] Could not find closing trade for {symbol} {position_side} "
+            f"after {max_attempts} attempts"
+        )
+        return None
+
     @handle_errors(
         component="binance_handler",
         severity=ErrorSeverity.WARNING,
@@ -1747,12 +1817,40 @@ class BinanceExecutionHandler:
                 if side not in binance_map:
                     logger.warning(
                         f"[SYNC] ⚠️ Found position in portfolio not on Binance: {side.upper()} "
-                        f"(ID: {portfolio_pos.position_id}). Closing locally."
+                        f"(ID: {portfolio_pos.position_id}) — externally closed, fetching broker data."
                     )
+
+                    # Query Binance Futures trade history for the real fill price
+                    # and realized P&L (mirrors the MT5 sync path).
+                    broker_data = self._fetch_broker_close_data(
+                        symbol=symbol,
+                        position_side=side,
+                        opened_at=getattr(portfolio_pos, "entry_time", None),
+                    )
+
+                    fill_price = None
+                    if broker_data:
+                        fill_price = broker_data.get("fill_price")
+                        logger.info(
+                            f"[SYNC] Broker data for {side.upper()}: "
+                            f"fill=${fill_price}, pnl=${broker_data.get('profit', 'n/a')}, "
+                            f"commission=${broker_data.get('commission', 0)}"
+                        )
+                    else:
+                        logger.debug(
+                            f"[SYNC] No Binance trade found for {side.upper()} — "
+                            f"falling back to market price."
+                        )
+
+                    if fill_price is None or fill_price <= 0:
+                        fill_price = current_price
+
                     self.portfolio_manager.close_position(
                         position_id=portfolio_pos.position_id,
-                        exit_price=current_price,
+                        exit_price=fill_price,
                         reason="sync_desync_from_exchange",
+                        already_closed_on_exchange=True,
+                        preloaded_broker_data=broker_data,
                     )
 
             logger.info("[SYNC] Reconciliation complete.")
