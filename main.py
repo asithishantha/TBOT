@@ -4527,9 +4527,27 @@ class TradingBot:
             # ================================================================
             # ✅ FIX: Handle hybrid vs single aggregator mode with context
             # ================================================================
-            # Get latest MTF data
+            # Get latest MTF regime data — refresh on every cycle.
+            # Previously this block only read from the startup cache, meaning
+            # the regime was frozen for the entire session in council/performance
+            # mode. The detector has a 300s internal cache so calling this every
+            # 5-min cycle is cheap (returns cached result until the cache expires).
             mtf_regime = {}
-            if (
+            if self.mtf_integration:
+                try:
+                    mtf_regime = self.mtf_integration.get_regime_for_trading(
+                        asset_name=asset_name, symbol=symbol, exchange=exchange
+                    )
+                    self._current_regime_data[asset_name] = mtf_regime
+                except Exception as _re:
+                    logger.error(f"[MTF] Failed to refresh regime for {asset_name}: {_re}")
+                    # Fall back to last known good data
+                    if (
+                        hasattr(self, "_current_regime_data")
+                        and asset_name in self._current_regime_data
+                    ):
+                        mtf_regime = self._current_regime_data[asset_name].copy()
+            elif (
                 hasattr(self, "_current_regime_data")
                 and asset_name in self._current_regime_data
             ):
@@ -5066,7 +5084,7 @@ class TradingBot:
             logger.info(
                 f"[TIME] Cycle interval: {check_interval}s ({check_interval / 60:.1f}min)"
             )
-            logger.info(f"[MTF] Regime updates: Every 4 hours")
+            logger.info(f"[MTF] Regime updates: Every cycle (~{check_interval}s), 5-min detector cache")
             logger.info(f"Press Ctrl+C to stop\n")
 
             # Run initial cycle

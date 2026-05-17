@@ -3164,6 +3164,14 @@ Adds Governor + Volatility + Sniper checks to existing aggregator
             if bonus_tags:
                 reasoning += " | " + " | ".join(bonus_tags[:2])
 
+            # ✅ FIX: If a filter (sniper, volatility, governor, ATR) zeroed the
+            # signal, reset quality to 0.0.  Previously signal_quality was set
+            # before the filter chain, so a 1.0-quality signal that was blocked
+            # by e.g. no_sniper_confirmation still reported "Signal Quality: 100%"
+            # in the [PERFORMANCE] log — contradictory and misleading.
+            if final_signal == 0 and original_signal != 0:
+                signal_quality = 0.0
+
             details = {
                 "timestamp": timestamp,
                 "regime": regime_name,

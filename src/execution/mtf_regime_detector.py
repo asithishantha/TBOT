@@ -161,7 +161,12 @@ class MultiTimeFrameRegimeDetector:
                 now = pd.Timestamp.now(tz='UTC')
                 hours_old = (now - latest_date).total_seconds() / 3600
 
-                stale_threshold = {"1h": 1.0, "4h": 4.0, "1d": 24.0}.get(timeframe_str, 4.0)
+                # ✅ FIX: 1H threshold raised from 1.0h → 2.0h.
+                # The MTF detector drops the in-progress candle, so the last closed
+                # 1H bar is legitimately 60-119 min old near each hour boundary.
+                # A 1.0h limit triggered an API refetch on every 5-min bot cycle
+                # (CSV "Data is 1.2h old") — wasteful and added latency each loop.
+                stale_threshold = {"1h": 2.0, "4h": 4.0, "1d": 24.0}.get(timeframe_str, 4.0)
                 if hours_old > stale_threshold or pd.isna(hours_old):
                     logger.warning(f"[CSV] Data is {hours_old:.1f}h old (limit={stale_threshold}h) - FALLING BACK TO API")
                     return self._fetch_data(symbol, timeframe_str, exchange)

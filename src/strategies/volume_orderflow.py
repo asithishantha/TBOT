@@ -39,7 +39,12 @@ class VolumeOrderFlowStrategy(BaseStrategy):
         return max(self.mfi_period, self.cmf_period, self.volume_ma_period) + 50
 
     def generate_features(self, df: pd.DataFrame) -> pd.DataFrame:
-        df = df.copy()
+        df = df.copy().reset_index(drop=True)  # ✅ FIX: df.tail(N) preserves the original
+        # index (e.g. rows 150-299). Downstream code like pd.Series(close).diff() resets
+        # to 0-based index, while pd.Series(df["obv"]) keeps the original index. When
+        # pandas &-combines these mismatched Series it union-aligns them (300 elements)
+        # and the df assignment fails with "Length of values (300) != length of index (150)".
+        # reset_index() makes every column share the same 0-based index throughout.
         close = df["close"].values.astype("float64")
         high = df["high"].values.astype("float64")
         low = df["low"].values.astype("float64")
