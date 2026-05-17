@@ -320,6 +320,13 @@ class TradingBot:
         self.mtf_integration = None
         self._current_regime_data = {}
 
+        # ✅ FIX: Dedup tracker for blocked-signal Telegram notifications.
+        # Key: asset name. Value: (signal_direction, block_reason) tuple.
+        # _notify_blocked only fires a Telegram message when the key changes,
+        # preventing the same "BTC SELL blocked by sniper" from going out every
+        # 5-minute cycle while market conditions haven't changed.
+        self._last_blocked_notification: dict = {}
+
         self.dynamic_selector = None
         self.hybrid_selector = None
 
@@ -2299,6 +2306,21 @@ class TradingBot:
             return  # genuine hold, nothing to report
         if not self.telegram_bot or not self.telegram_bot._is_ready:
             return
+
+        # ✅ FIX: Dedup — only send when the blocked direction or reason changes.
+        # Without this, the same "BTC SELL blocked by no_sniper_confirmation"
+        # message fires every 5-minute cycle while market conditions are unchanged,
+        # flooding Telegram. We track (signal, block_reason) per asset and stay
+        # silent when nothing has changed since the last notification.
+        _dedup_key = (signal, block_reason)
+        if self._last_blocked_notification.get(asset) == _dedup_key:
+            logger.debug(
+                f"[TELEGRAM] Suppressed duplicate blocked-signal notification "
+                f"for {asset} (signal={signal}, reason={block_reason})"
+            )
+            return
+        self._last_blocked_notification[asset] = _dedup_key
+
         try:
             # Stamp the REAL hybrid mode into details so Telegram shows
             # "Engine: [PERF]" / "Engine: [COUNCIL]" based on what the

@@ -113,11 +113,23 @@ class HistoricalDataUpdater:
             
             symbol = asset_cfg["symbol"]
             exchange = asset_cfg.get("exchange", "binance")
-            
-            # Generate filename
-            csv_filename = self._get_filename(asset_name, timeframe)
+
+            # ✅ FIX: When the exchange is MT5, use mt5_symbol if available.
+            # Previously the updater always used asset_cfg["symbol"] (e.g. "BTCUSDT"
+            # for BTC) even when exchange="mt5", but MT5 has "BTCUSDm". The fetch
+            # returned "No MT5 data for BTCUSDT" every cycle and the CSVs were never
+            # updated. mt5_symbol is the correct identifier for the MT5 broker feed.
+            if exchange == "mt5":
+                symbol = asset_cfg.get("mt5_symbol", symbol)
+
+            # Derive CSV filename from the actual trading symbol so it matches
+            # the path the MTF regime detector reads from (data/raw/{symbol}_{tf}.csv).
+            # Previously _get_filename() had a hardcoded map ("BTC" → "BTCUSDT_*.csv")
+            # which diverged from the MTF detector's path ("BTCUSDm_*.csv"), meaning
+            # the historical updater and regime detector operated on separate files.
+            csv_filename = f"{symbol}_{timeframe}.csv"
             csv_path = self.historical_dir / csv_filename
-            
+
             logger.info(f"\n{'='*70}")
             logger.info(f"[UPDATE] {asset_name} {timeframe.upper()} Data")
             logger.info(f"{'='*70}")
