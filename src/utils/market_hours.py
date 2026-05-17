@@ -259,22 +259,35 @@ class MarketHours:
     @staticmethod
     def is_rollover_dead_zone() -> bool:
         """
-        Detects the high-risk 'Rollover' period (21:30 - 23:30 UTC).
+        Detects the high-risk 'Rollover' period (21:30 - 23:30 UTC) on weekdays.
         This is when liquidity is lowest, spreads are highest, and price
         action is often directionless or prone to gaps.
+
+        NOTE: Sunday is explicitly excluded — 22:00 UTC on Sunday is the Forex/Gold
+        market OPEN on Exness (and most MT5 brokers), not a rollover period.
+        Blocking Sunday 22:00–23:30 would eat the first 90 minutes of the week.
         """
         now = MarketHours.get_gmt_time()
+        day = now.weekday()   # 0=Monday … 5=Saturday, 6=Sunday
         hour = now.hour
         minute = now.minute
-        
-        # 21:30 to 23:30 UTC
+
+        # Sunday: market is opening, not rolling over — never block
+        if day == 6:
+            return False
+
+        # Saturday: market is closed anyway, no need to flag rollover
+        if day == 5:
+            return False
+
+        # Mon–Fri: block the 21:30–23:30 UTC window
         if hour == 21 and minute >= 30:
             return True
         if hour == 22:
             return True
         if hour == 23 and minute < 30:
             return True
-            
+
         return False
 
     @staticmethod
@@ -292,9 +305,11 @@ class MarketHours:
             # ✅ Crypto is 24/7 - Removed Institutional Weekend Gate
             return True
 
-        if asset_type in ["gold", "xauusd", "forex", "eur", "gbp", "usd", "usoil"]:
-            return MarketHours.is_forex_market_open()        
-        if asset_type in ["stocks", "spy", "qqq", "aapl"]:
+        if asset_type in ["gold", "xauusd", "forex", "eur", "gbp", "usd", "usoil",
+                          "eurusd", "eurjpy", "gbpusd", "gbpaud", "usdjpy"]:
+            return MarketHours.is_forex_market_open()
+
+        if asset_type in ["stocks", "spy", "qqq", "aapl", "ustec", "nas100", "us100"]:
             return MarketHours.is_us_stock_market_open()
         
         # Default to forex hours for unknown assets

@@ -5348,8 +5348,14 @@ class TradingBot:
                     message="Trading bot stopped",
                     component="main",
                     metadata={
-                        "final_capital": self.portfolio_manager.current_capital,
-                        "open_positions": self.portfolio_manager.get_open_positions_count(),
+                        "final_capital": (
+                            self.portfolio_manager.current_capital
+                            if self.portfolio_manager is not None else 0.0
+                        ),
+                        "open_positions": (
+                            self.portfolio_manager.get_open_positions_count()
+                            if self.portfolio_manager is not None else 0
+                        ),
                     },
                 )
 

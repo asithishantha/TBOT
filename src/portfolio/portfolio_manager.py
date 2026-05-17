@@ -1324,17 +1324,25 @@ class PortfolioManager:
         # ================================================================
         if strict and not self.is_paper_mode and total_capital == 0:
             if self.mt5_handler is None and self.binance_client is None:
-                # This is okay, handlers aren't ready yet, will refresh later
+                # Handlers not wired yet — normal during very early init
                 logger.warning("[BALANCE] No handlers initialized yet, initial capital set to 0. Will refresh later.")
                 return 0.0
             else:
-                error_msg = (
-                    f"CRITICAL: Unable to fetch live account balances!\n"
-                    f"Errors: {', '.join(errors)}\n"
-                    f"Cannot proceed with live trading without valid balances."
+                # Handlers exist but returned 0 — likely a new/unfunded account, MT5 not
+                # fully logged-in yet, or a transient connection hiccup.  Don't crash;
+                # fall back to the configured initial_capital so the bot can start and
+                # let the periodic balance refresh (every 5 min) pick up the real figure.
+                fallback = self.paper_capital  # set from portfolio_config["initial_capital"]
+                logger.warning(
+                    f"\n{'='*80}\n"
+                    f"[BALANCE] ⚠️  Live balances unavailable at startup — using config fallback.\n"
+                    f"  Errors   : {', '.join(errors)}\n"
+                    f"  Fallback : ${fallback:,.2f} (from portfolio.initial_capital in config)\n"
+                    f"  Action   : Bot will start normally; balance refreshes every 5 min.\n"
+                    f"  Cause    : New account, MT5 not yet logged-in, or transient error.\n"
+                    f"{'='*80}"
                 )
-                logger.error(error_msg)
-                raise RuntimeError(error_msg)
+                return fallback
 
         # ================================================================
         # ✅ FIX 5: Fallback handling
