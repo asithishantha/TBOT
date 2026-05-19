@@ -281,11 +281,11 @@ class MarketWatcher:
         suppress_buy  = False
         suppress_reason = ""
 
-        # ── Case 1: existing short + recent candles are bullish ───────────────
-        # New SELL signals are useless or dangerous when price is bouncing up.
+        # ── Case 1a: existing SHORT + candles bullish + price bounced above entry ──
+        # Suppress additional SELL signals when an open short is already being
+        # hit by adverse price action. Prevents doubling into a losing short.
         short_positions = [p for p in positions if p.side == "short"]
         if short_positions and momentum_direction == 1 and atr_val > 0:
-            # Find the worst entry (highest price = most at risk)
             ref_price = max(p.entry_price for p in short_positions)
             bounce    = current_price - ref_price   # positive = price went UP vs entry
             if bounce > _SUPPRESS_ATR_BOUNCE * atr_val:
@@ -295,23 +295,28 @@ class MarketWatcher:
                     f"above short entry ${ref_price:.4g} while momentum is bullish"
                 )
 
-        # ── Case 2: momentum disagrees with signal direction (no open position) ──
-        # Even without an open position, if the last 3 candles are all going the
-        # same way as the signal, that's fine. If 2-3 candles are AGAINST the
-        # signal direction, suppress.
-        if not suppress_sell and momentum_direction == 1:
-            # All recent candles are green → suppressing new sells
-            suppress_sell   = True
-            suppress_reason = (
-                f"Last {_MOMENTUM_CANDLES} candles are predominantly BULLISH — "
-                f"suppressing new SHORT until momentum realigns"
-            )
-        elif not suppress_buy and momentum_direction == -1:
-            suppress_buy    = True
-            suppress_reason = (
-                f"Last {_MOMENTUM_CANDLES} candles are predominantly BEARISH — "
-                f"suppressing new LONG until momentum realigns"
-            )
+        # ── Case 1b: existing LONG + candles bearish + price dropped below entry ──
+        # Symmetric protection: suppress additional BUY signals when an open long
+        # is already being hit adversely downward.
+        long_positions = [p for p in positions if p.side == "long"]
+        if not suppress_buy and long_positions and momentum_direction == -1 and atr_val > 0:
+            ref_price = min(p.entry_price for p in long_positions)
+            drop      = ref_price - current_price   # positive = price went DOWN vs entry
+            if drop > _SUPPRESS_ATR_BOUNCE * atr_val:
+                suppress_buy    = True
+                suppress_reason = (
+                    f"Price dropped -{drop:.4g} ({drop/atr_val:.1f}× ATR) "
+                    f"below long entry ${ref_price:.4g} while momentum is bearish"
+                )
+
+        # NOTE: Context-free suppression (old Case 2 — blocking any SELL when
+        # candles are bullish or any BUY when candles are bearish) has been
+        # removed. That logic was killing legitimate pullback re-entries and
+        # trend continuation setups where 3 corrective candles form before the
+        # real move. The CMR gate in signal_aggregator and council_aggregator
+        # already handles momentum-vs-signal disagreement with full regime
+        # context. The MarketWatcher's suppression role is position protection
+        # only (Cases 1a / 1b above).
 
         with self._suppress_lock:
             new_state: dict = {"suppressed": False, "reason": "", "direction": 0}
