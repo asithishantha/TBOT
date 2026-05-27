@@ -539,9 +539,16 @@ Adds Governor + Volatility + Sniper checks to existing aggregator
             return state
 
         # ── D.3: Session Context ──────────────────────────────────────────
+        # Use bar timestamp when available (critical in backtest where wall-clock
+        # is always "now" regardless of the bar's actual datetime).
         try:
-            _hour = datetime.utcnow().hour
-            _dow = datetime.utcnow().weekday()
+            _bar_ts = df.index[-1] if not df.empty else None
+            if _bar_ts is not None and hasattr(_bar_ts, 'hour'):
+                _hour = _bar_ts.hour
+                _dow  = _bar_ts.weekday()
+            else:
+                _hour = datetime.utcnow().hour
+                _dow  = datetime.utcnow().weekday()
             if 0 <= _hour < 8:
                 state.session_name = "ASIAN"
             elif 8 <= _hour < 12:
@@ -736,7 +743,15 @@ Adds Governor + Volatility + Sniper checks to existing aggregator
 
         # ── F.4: BTC CVD from WebSocket (injected via governor_data) ─────
         if self.asset_type in ("BTC", "BTCUSDT") and governor_data:
-            state.cvd_trend = int(governor_data.get("cvd_trend", 0))
+            _raw_cvd = governor_data.get("cvd_trend", 0)
+            # Robust int conversion — backtest supplies "FLAT" string, live supplies int
+            if isinstance(_raw_cvd, str):
+                _cvd_map = {"UP": 1, "BULL": 1, "BULLISH": 1,
+                            "DOWN": -1, "BEAR": -1, "BEARISH": -1,
+                            "FLAT": 0, "NEUTRAL": 0, "": 0}
+                state.cvd_trend = _cvd_map.get(_raw_cvd.upper(), 0)
+            else:
+                state.cvd_trend = int(_raw_cvd)
             state.cvd_stale = bool(governor_data.get("cvd_stale", True))
             # ── F.6: L2 Order Book Imbalance ─────────────────────────────
             state.order_book_imbalance = float(governor_data.get("order_book_imbalance", 0.0))
@@ -803,17 +818,35 @@ Adds Governor + Volatility + Sniper checks to existing aggregator
 
     # ── D.1: Trend Lifecycle Modifier ────────────────────────────────────
 
-    def _update_trend_lifecycle(self, state, regime_name: str):
-        """Classify where in the trend lifecycle this asset sits."""
-        from datetime import datetime
+    def _update_trend_lifecycle(self, state, regime_name: str, current_dt=None):
+        """
+        Classify where in the trend lifecycle this asset sits.
+
+        Args:
+            state:       CompositeState to update in place.
+            regime_name: Current regime string (e.g. "BULLISH").
+            current_dt:  The bar's actual timestamp.  Supply this in backtesting
+                         so that regime_age_hours reflects elapsed *bar* time, not
+                         wall-clock time.  Defaults to datetime.now() for live use.
+        """
+        from datetime import datetime, timezone
         asset = self.asset_type
-        now = datetime.now()
+        # Use provided timestamp if given, otherwise real wall-clock time.
+        # In backtesting all bars run in seconds of wall time, so datetime.now()
+        # would keep regime_age_hours ≈ 0 for the entire run.
+        now = current_dt if current_dt is not None else datetime.now()
+        # Ensure tz-naive for consistent arithmetic
+        if hasattr(now, 'tzinfo') and now.tzinfo is not None:
+            now = now.replace(tzinfo=None)
 
         prev = self._previous_regime.get(asset)
 
         # Detect transition
         if prev and prev != regime_name:
-            duration = (now - self._regime_start_time.get(asset, now)).total_seconds() / 3600
+            _prev_start = self._regime_start_time.get(asset, now)
+            if hasattr(_prev_start, 'tzinfo') and _prev_start.tzinfo is not None:
+                _prev_start = _prev_start.replace(tzinfo=None)
+            duration = (now - _prev_start).total_seconds() / 3600
             if asset not in self._regime_durations:
                 self._regime_durations[asset] = []
             self._regime_durations[asset].append(duration)
@@ -853,9 +886,11 @@ Adds Governor + Volatility + Sniper checks to existing aggregator
 
         self._previous_regime[asset] = regime_name
 
-        # Regime age
-        start = self._regime_start_time.get(asset, now)
-        state.regime_age_hours = (now - start).total_seconds() / 3600
+        # Regime age — uses bar timestamp in backtest, wall-clock in live
+        _start = self._regime_start_time.get(asset, now)
+        if hasattr(_start, 'tzinfo') and _start.tzinfo is not None:
+            _start = _start.replace(tzinfo=None)
+        state.regime_age_hours = (now - _start).total_seconds() / 3600
 
         # Median regime duration (dynamic per asset)
         durations = self._regime_durations.get(asset, [])
@@ -994,6 +1029,15 @@ Adds Governor + Volatility + Sniper checks to existing aggregator
             _pierced_from_above = _l < _ema50 < _c  # Wick below, closed above
             _broke_down = _c < _ema50 and _o > _ema50
 
+            # ATR needed to judge "distance" — recalculate a quick estimate here
+            try:
+                import talib as _ta_ma
+                _atr14 = _ta_ma.ATR(df['high'].values, df['low'].values,
+                                    df['close'].values, timeperiod=14)
+                _atr_val = float(_atr14[-1]) if not np.isnan(_atr14[-1]) else 0.0
+            except Exception:
+                _atr_val = abs(_c - _ema50) * 0.5  # rough fallback
+
             if _pierced_from_above:
                 state.ema_50_status = "DEFENDED"
                 _wick = _ema50 - _l
@@ -1008,6 +1052,25 @@ Adds Governor + Volatility + Sniper checks to existing aggregator
             elif _broke_down:
                 state.ema_50_status = "BROKEN"
                 state.ema_50_reclassified = "RESISTANCE"
+            elif _c > _ema50 and _atr_val > 0:
+                # Price is above EMA50 — label "EMA_ABOVE" with a distance tier.
+                # This unlocks the EMA_ABOVE branch in _score_confluence for
+                # trend-continuation scoring without requiring a pierce/defend event.
+                _dist_atr = (_c - _ema50) / _atr_val
+                if _dist_atr < 3.0:
+                    state.ema_50_status = "EMA_ABOVE"      # close proximity — continuation
+                    state.ema_50_reclassified = "SUPPORT"   # treat as dynamic support
+                else:
+                    state.ema_50_status = "EMA_ABOVE_FAR"   # extended from EMA50
+                    state.ema_50_reclassified = "LINE"
+            elif _c < _ema50 and _atr_val > 0:
+                _dist_atr = (_ema50 - _c) / _atr_val
+                if _dist_atr < 3.0:
+                    state.ema_50_status = "EMA_BELOW"
+                    state.ema_50_reclassified = "RESISTANCE"
+                else:
+                    state.ema_50_status = "EMA_BELOW_FAR"
+                    state.ema_50_reclassified = "LINE"
             else:
                 state.ema_50_status = "UNTESTED"
 
@@ -1032,15 +1095,23 @@ Adds Governor + Volatility + Sniper checks to existing aggregator
             _h = df['high'].iloc[-1]
             _l = df['low'].iloc[-1]
             _c = df['close'].iloc[-1]
-            _hour = datetime.utcnow().hour
+
+            # Use bar timestamp when available so backtest reflects actual bar time.
+            # df.index[-1] is a pd.Timestamp for both live and backtest DataFrames.
+            _bar_ts = df.index[-1] if not df.empty else None
+            if _bar_ts is not None and hasattr(_bar_ts, 'hour'):
+                _hour = _bar_ts.hour
+                _today = _bar_ts.date()
+            else:
+                _hour = datetime.utcnow().hour
+                _today = datetime.utcnow().date()
 
             # Update Asian range (00:00-08:00 UTC)
             if 0 <= _hour < 8:
                 self._asian_high[asset] = max(self._asian_high.get(asset, 0), _h)
                 self._asian_low[asset] = min(self._asian_low.get(asset, float('inf')), _l)
 
-            # Update PDH/PDL daily
-            _today = datetime.utcnow().date()
+            # Update PDH/PDL daily — keyed on bar date not wall-clock date
             if self._pdh_date != _today:
                 if len(df) > 24:
                     _yesterday = df.iloc[-25:-1]
@@ -1075,10 +1146,11 @@ Adds Governor + Volatility + Sniper checks to existing aggregator
 
     # ── Section I: Confluence Engine ─────────────────────────────────────
 
-    def _score_confluence(self, state, tf_conf: float, mr_conf: float):
+    def _score_confluence(self, state, tf_conf: float, mr_conf: float, signal: int = 0):
         """
         The Brain. Reads the complete state and applies adjustments
         based on PATTERNS first, individual evidence second.
+        signal: the current trade direction (+1 long, -1 short, 0 unknown)
         """
 
         # ─── STEP 1: INSTITUTIONAL PATTERN RECOGNITION ───────────────────
@@ -1138,7 +1210,7 @@ Adds Governor + Volatility + Sniper checks to existing aggregator
             "slopes_aligned": state.slopes_aligned,
         }
         _ma_checks = {
-            "ema50=DEFENDED": state.ema_50_status == "DEFENDED",
+            "ema50=DEFENDED/ABOVE": state.ema_50_status in ("DEFENDED", "EMA_ABOVE"),
             "ema50=SUPPORT": state.ema_50_reclassified == "SUPPORT",
             "phase∈CONFIRM/ESTAB": state.lifecycle_phase in ("CONFIRMATION", "ESTABLISHED"),
             f"age_ratio<{1.5}": state.regime_age_ratio < 1.5,
@@ -1184,8 +1256,8 @@ Adds Governor + Volatility + Sniper checks to existing aggregator
             mr_conf *= 0.70
             state.institutional_pattern = "SPRING_BREAKOUT"
 
-        # PATTERN E: MA Defense → Continuation
-        elif (state.ema_50_status == "DEFENDED" and
+        # PATTERN E: MA Defense → Continuation (or EMA_ABOVE trend ride)
+        elif (state.ema_50_status in ("DEFENDED", "EMA_ABOVE") and
               state.ema_50_reclassified == "SUPPORT" and
               state.lifecycle_phase in ("CONFIRMATION", "ESTABLISHED") and
               state.regime_age_ratio < 1.5):
@@ -1197,7 +1269,19 @@ Adds Governor + Volatility + Sniper checks to existing aggregator
             state.institutional_pattern = None
 
             _exhaust = 0.0
-            if state.choch_detected:            _exhaust += 2.0
+            if state.choch_detected:
+                # Direction-aware CHoCH penalty (Fix #19):
+                # CHoCH = lower swing high = potential bull → bear reversal.
+                # For a SHORT signal this IS exhaustion evidence (+2.0).
+                # For a LONG signal in an early/mid bull regime it's just a pullback
+                # dip — penalise lightly only if the regime is already long in the
+                # tooth (age_ratio > 1.0). In fresh bull regimes it's noise (0.3).
+                if signal == 1:
+                    _exhaust += 0.3 if state.regime_age_ratio <= 1.0 else 1.0
+                elif signal == -1:
+                    _exhaust += 2.0
+                else:
+                    _exhaust += 1.0   # unknown direction — moderate penalty
             if state.is_parabolic:              _exhaust += 1.5
             if state.divergence_detected:       _exhaust += state.divergence_strength * 2
             if state.regime_age_ratio > 1.5:    _exhaust += min(2.0, state.regime_age_ratio - 1.5)
@@ -1224,7 +1308,8 @@ Adds Governor + Volatility + Sniper checks to existing aggregator
             if state.lifecycle_phase == "PICKUP":        _confirm += 1.5
             if state.lifecycle_phase == "CONFIRMATION":  _confirm += 1.0
             if state.squeeze_active:            _confirm += 0.5
-            if state.ema_50_status == "DEFENDED":        _confirm += 1.0
+            if state.ema_50_status == "DEFENDED":          _confirm += 1.0
+            elif state.ema_50_status == "EMA_ABOVE":       _confirm += 0.5   # Trend continuation bonus
             if state.cvd_trend != 0 and not state.cvd_stale: _confirm += 1.0
             if state.level_defended:            _confirm += 1.5
 
@@ -2112,17 +2197,33 @@ Adds Governor + Volatility + Sniper checks to existing aggregator
             # ================================================================
             # 3. Trend Momentum (Institutional Continuity)
             # ================================================================
-            # Reason: If the macro regime and 1H momentum are both strong and 
+            # Reason: If the macro regime and 1H momentum are both strong and
             # aligned, we allow entry even without a classic breakout or pattern.
+            # Fix #18: Use "consensus_regime" key (backtest) falling back to "regime"
+            # (live). Also derive h1_momentum_dir from df when not supplied by
+            # governor (backtest governor doesn't compute it).
             if governor_data:
-                _regime = governor_data.get("regime", "NEUTRAL")
+                _regime = governor_data.get("consensus_regime",
+                           governor_data.get("regime", "NEUTRAL"))
                 _is_bull = "BULL" in _regime.upper()
                 _is_bear = "BEAR" in _regime.upper()
-                _h1_dir = governor_data.get("h1_momentum_dir", "FLAT")
-                
+
+                # Derive 1H momentum from df close slope when governor doesn't supply it
+                _h1_dir = governor_data.get("h1_momentum_dir", "")
+                if not _h1_dir and len(df) >= 5:
+                    _slope = df['close'].iloc[-1] - df['close'].iloc[-5]
+                    _atr_est = (df['high'].iloc[-14:] - df['low'].iloc[-14:]).mean() if len(df) >= 14 else abs(_slope)
+                    # Require slope to exceed 0.25 ATR to be directional (filters noise)
+                    if _slope > _atr_est * 0.25:
+                        _h1_dir = "UP"
+                    elif _slope < -_atr_est * 0.25:
+                        _h1_dir = "DOWN"
+                    else:
+                        _h1_dir = "FLAT"
+
                 _regime_aligned = (signal == 1 and _is_bull) or (signal == -1 and _is_bear)
                 _h1_aligned = (signal == 1 and _h1_dir == "UP") or (signal == -1 and _h1_dir == "DOWN")
-                
+
                 if _regime_aligned and _h1_aligned:
                     reasons.append({
                         'passed': True,
@@ -2204,29 +2305,54 @@ Adds Governor + Volatility + Sniper checks to existing aggregator
                     })
             
             # ================================================================
-            # 7. Established Trend + BOS Confirmation (Institutional Continuation)
+            # 7. Established Trend + BOS / EMA Continuation (Institutional Continuation)
             # ================================================================
             # Reason: When the lifecycle is ESTABLISHED/CONFIRMATION with a fresh
             # Break-of-Structure and aligned slopes, this is a classic institutional
-            # trend-continuation setup. It is valid regardless of the macro regime
-            # label (which reads NEUTRAL during transitional phases).
-            # The TREND_MOMENTUM trigger only fires for explicit BULL/BEAR regimes,
-            # so without this trigger these high-quality setups would be silently
-            # blocked despite a strong TF signal.
+            # trend-continuation setup. Also fires when price is cleanly above EMA50
+            # with aligned slopes (EMA_ABOVE) — this covers assets in a parabolic
+            # rally where lower swing highs create CHoCH (not BOS) but the overall
+            # trend and EMAs are clearly bullish. Without this path these setups are
+            # silently blocked for assets like GOLD in a strong uptrend.
             _cs = getattr(self, '_cached_composite', None)
             if _cs is not None:
-                if (
+                _bos_continuation = (
                     _cs.lifecycle_phase in ("CONFIRMATION", "ESTABLISHED")
                     and _cs.bos_detected
                     and _cs.slopes_aligned
                     and not _cs.structural_decay
                     and not _cs.absorption_detected
                     and _cs.regime_age_ratio < 2.0
-                ):
+                )
+                _ema_above_continuation = (
+                    _cs.lifecycle_phase in ("CONFIRMATION", "ESTABLISHED")
+                    and _cs.ema_50_status in ("EMA_ABOVE",)
+                    and _cs.slopes_aligned
+                    and not _cs.structural_decay
+                    and _cs.regime_age_ratio < 1.8
+                    and signal == 1   # only valid as a long trigger
+                )
+                _ema_below_continuation = (
+                    _cs.lifecycle_phase in ("CONFIRMATION", "ESTABLISHED")
+                    and _cs.ema_50_status in ("EMA_BELOW",)
+                    and _cs.slopes_aligned
+                    and not _cs.structural_decay
+                    and _cs.regime_age_ratio < 1.8
+                    and signal == -1  # only valid as a short trigger
+                )
+                if _bos_continuation:
                     reasons.append({
                         'passed': True,
                         'trigger_type': 'ESTABLISHED_BOS',
                         'phase': _cs.lifecycle_phase,
+                        'age_ratio': round(_cs.regime_age_ratio, 2),
+                    })
+                elif _ema_above_continuation or _ema_below_continuation:
+                    reasons.append({
+                        'passed': True,
+                        'trigger_type': 'EMA_TREND_CONTINUATION',
+                        'phase': _cs.lifecycle_phase,
+                        'ema_status': _cs.ema_50_status,
                         'age_ratio': round(_cs.regime_age_ratio, 2),
                     })
 
@@ -2578,16 +2704,23 @@ Adds Governor + Volatility + Sniper checks to existing aggregator
             br_res = self.break_retest_validator.validate(df, self.asset_type)
 
             # D.1: Update trend lifecycle in composite state
+            # Extract bar timestamp from governor_data when available.  In a
+            # backtest this is the historical bar's datetime; in live trading it
+            # is the current wall-clock time — both are correct for their context.
+            _bar_dt = None
+            if governor_data:
+                _ts = governor_data.get("timestamp")
+                if _ts:
+                    try:
+                        from datetime import datetime as _dtp
+                        _bar_dt = _dtp.fromisoformat(_ts) if isinstance(_ts, str) else _ts
+                    except Exception:
+                        _bar_dt = None
+
             if state is not None:
-                self._update_trend_lifecycle(state, regime_name)
-                
-                # Ensure regime_age_ratio is always populated (Issue 1, Step 2 fix)
-                _start = self._regime_start_time.get(self.asset_type)
-                if _start:
-                    _age_hours = (datetime.now() - _start).total_seconds() / 3600
-                    state.regime_age_hours = _age_hours
-                    _median = state.median_regime_duration or 12.0
-                    state.regime_age_ratio = _age_hours / _median
+                self._update_trend_lifecycle(state, regime_name, current_dt=_bar_dt)
+                # regime_age_ratio is now fully populated inside _update_trend_lifecycle;
+                # the separate re-calculation block below is no longer needed.
 
             # Update stats based on provided regime
             if self.previous_regime is not None and self.previous_regime != is_bull:
@@ -3220,10 +3353,32 @@ Adds Governor + Volatility + Sniper checks to existing aggregator
                         if not vol_passed: final_signal = 0; reasoning = "low_volatility"
                         else:
                             sniper_passed, _ = self._check_sniper_filter(df, final_signal, governor_data=governor_data)
-                            if not sniper_passed: final_signal = 0; reasoning = "no_sniper_confirmation"
-                            else:
+                            if not sniper_passed:
+                                # Fix #19: Sniper is advisory (quality discount) for strong
+                                # consensus signals; hard block only for marginal signals.
+                                # strong_signal_bypass default = 0.70 (set at construction).
+                                if signal_quality >= self.strong_signal_bypass:
+                                    signal_quality *= 0.80   # −20% quality, still trades
+                                    reasoning += "+sniper_warning"
+                                    logger.info(
+                                        f"[SNIPER] ⚠️ Advisory downgrade "
+                                        f"(quality={signal_quality:.2f})"
+                                    )
+                                else:
+                                    final_signal = 0; reasoning = "no_sniper_confirmation"
+                            if final_signal != 0:
                                 atr_exp_passed = self._check_atr_expansion_filter(df, trade_type)
-                                if not atr_exp_passed: final_signal = 0; reasoning = "insufficient_trend_strength"
+                                if not atr_exp_passed:
+                                    # Same advisory logic for ADX filter
+                                    if signal_quality >= self.strong_signal_bypass:
+                                        signal_quality *= 0.85   # −15% quality, still trades
+                                        reasoning += "+adx_warning"
+                                        logger.info(
+                                            f"[ADX_TREND] ⚠️ Advisory downgrade "
+                                            f"(quality={signal_quality:.2f})"
+                                        )
+                                    else:
+                                        final_signal = 0; reasoning = "insufficient_trend_strength"
                                 else:
                                     # Error 7: Profit Economics Monitor (non-blocking log)
                                     try:
@@ -3332,7 +3487,8 @@ Adds Governor + Volatility + Sniper checks to existing aggregator
 
                 # Section I: Confluence Engine — adjust tf_conf and mr_conf
                 try:
-                    tf_conf, mr_conf, state = self._score_confluence(state, tf_conf, mr_conf)
+                    tf_conf, mr_conf, state = self._score_confluence(
+                        state, tf_conf, mr_conf, signal=final_signal)
                 except Exception as _ce:
                     logger.debug(f"[CONFLUENCE] Scoring failed: {_ce}")
 
@@ -3362,6 +3518,26 @@ Adds Governor + Volatility + Sniper checks to existing aggregator
             if final_signal == 0 and original_signal != 0:
                 signal_quality = 0.0
 
+            # ── ATR-14 for downstream stop-loss sizing ─────────────────────────
+            # mt5_handler and binance_handler look for signal_details["atr_fast"]
+            # to compute the ATR-based SL distance.  The council aggregator always
+            # includes this key; the performance aggregator was omitting it, causing
+            # a fallback to a static percentage SL (wrong stop distance).
+            _atr_fast_for_sl = None
+            try:
+                import talib as _ta_atr
+                _atr_result = _ta_atr.ATR(
+                    df['high'].values.astype(float),
+                    df['low'].values.astype(float),
+                    df['close'].values.astype(float),
+                    timeperiod=14,
+                )
+                _last = float(_atr_result[-1])
+                if not np.isnan(_last) and _last > 0:
+                    _atr_fast_for_sl = _last
+            except Exception:
+                pass
+
             details = {
                 "timestamp": timestamp,
                 "regime": regime_name,
@@ -3378,6 +3554,7 @@ Adds Governor + Volatility + Sniper checks to existing aggregator
                 "tf_confidence": tf_conf,
                 "ema_signal": ema_signal,
                 "ema_confidence": ema_conf,
+                "atr_fast": _atr_fast_for_sl,
                 "governor_data": governor_data, # Pass governor data through
                 "ai_validation": ai_validation_details,
                 "trade_type": trade_type,

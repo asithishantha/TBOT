@@ -447,9 +447,27 @@ class MarketWatcher:
 
         self._last_alert[pos_id + "_warn"] = now
 
-        # Compute breakeven SL
+        # Compute breakeven SL.
+        #
+        # Root cause of retcode=10016 (Invalid stops): when price has already moved
+        # adversely past the entry price, setting SL at entry+tiny_buffer places
+        # the stop BELOW current price for a short (or above for a long), which MT5
+        # rejects outright. The fix ensures the SL always clears current price by at
+        # least 0.3×ATR (large enough to beat the broker freeze-level on any asset we
+        # trade — FX, crypto, oil, indices).
+        #
+        # Logic:
+        #   SHORT: SL = max(entry + buf, current_price + buf)
+        #     → if price hasn't moved past entry yet: true breakeven stop
+        #     → if price has moved past entry: tight stop above current price
+        #   LONG:  SL = min(entry - buf, current_price - buf)
+        #     → mirror of above
         entry = position.entry_price
-        be_sl = entry * 1.001 if position.side == "short" else entry * 0.999  # tiny buffer
+        _buf  = max(entry * 0.0003, 0.3 * atr)   # ~3 pips on FX or 0.3×ATR, whichever is larger
+        if position.side == "short":
+            be_sl = max(entry + _buf, current_price + _buf)
+        else:
+            be_sl = min(entry - _buf, current_price - _buf)
 
         logger.warning(
             f"[WATCHER] ⚠️  {asset_name} {position.side.upper()} adverse move "

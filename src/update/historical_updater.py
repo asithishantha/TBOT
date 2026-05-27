@@ -25,26 +25,30 @@ class HistoricalDataUpdater:
         self.historical_dir.mkdir(parents=True, exist_ok=True)
         
         # Define timeframe configurations
+        # Lookback windows are sized so every indicator always has enough history:
+        #   1H  → 365 days = 8,760 bars  (200 EMA needs 200 bars; strategies use 100-bar lookback)
+        #   4H  → 730 days = 4,380 bars  (200 EMA on 4H needs 200×4h = 33 days; 730 gives 10× margin)
+        #   1D  → 1095 days = 3 years    (200-day EMA needs 200 bars; governor/macro filter needs full history)
         self.timeframes = {
             '1h': {
                 'binance_interval': '1h',
                 'mt5_timeframe': 'H1',
                 'suffix': '1h',
-                'lookback_days': 90,  # 3 months for 1H
-                'min_candles': 100,
+                'lookback_days': 365,   # 1 year — was 90 (too short for regime context)
+                'min_candles': 500,
             },
             '4h': {
                 'binance_interval': '4h',
                 'mt5_timeframe': 'H4',
                 'suffix': '4h',
-                'lookback_days': 365,  # 1 year for 4H
-                'min_candles': 250,
+                'lookback_days': 730,   # 2 years — unchanged
+                'min_candles': 500,
             },
             '1d': {
                 'binance_interval': '1d',
                 'mt5_timeframe': 'D1',
                 'suffix': '1d',
-                'lookback_days': 730,  # 2 years for 1D (Governor needs 200+ EMA)
+                'lookback_days': 1095,  # 3 years — was 730 (needed 200-day EMA with headroom)
                 'min_candles': 250,
             },
         }
