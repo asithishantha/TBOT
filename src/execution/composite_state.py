@@ -127,6 +127,13 @@ class CompositeState:
     nr7_id_active: bool = False
     # EMA 200 daily distance (Phase 4)
     ema200_1d_dist_atr: Optional[float] = None
+    # ══════════════════════════════════════════════════════════════
+    # PHASE 3B RESERVED — Retest Engine
+    # entry_type: populated by retest_engine; consumed by VTM.
+    # Values: MR_PULLBACK / TREND_FOLLOWING / SPRING_ENTRY /
+    #         RANGE_BOUNDARY / REJECT / None (no classification yet)
+    # ══════════════════════════════════════════════════════════════
+    entry_type: Optional[str] = None
 
     def sanitise(self) -> None:
         """

@@ -3522,17 +3522,19 @@ Adds Governor + Volatility + Sniper checks to existing aggregator
                 # STEP 5: Dynamic thresholds
                 adj_buy_thresh, adj_sell_thresh = self.calculate_regime_adjusted_thresholds(is_bull, regime_conf)
 
-                # STEP 5B: PHASE 2 — REQUIRED SCORE MODIFIER
-                # Livermore state-conditional delta applied to BOTH thresholds.
-                # SECONDARY states: +0.40 — entries still allowed but harder to clear.
-                # NATURAL states gate earlier (Hard Veto + Gatekeeper HOLD) so their
-                # modifier is 0.00 — no signal should reach here from NATURAL anyway.
-                # Full retest-type modifiers (CLEAN/BREAKOUT/etc.) wired in Phase 3B.
-                # All modifier values live in aggregator_presets.json — no magic numbers.
+                # STEP 5B: REQUIRED SCORE MODIFIER (Livermore state) + Retest Engine
+                # Layer 1: Livermore RSM — state-conditional base threshold delta.
+                #   SECONDARY states +0.40; NATURAL states 0.00 (gated before here).
+                # Layer 2: Retest Engine — entry context tier (CLEAN / BREAKOUT / WICK /
+                #   CHASE_SOFT / CHASE_HARD / NO_LEVEL_NEARBY).
+                # Both layers are additive; combined modifier capped at rsm_cap (1.50).
+                # All numeric values in aggregator_presets.json — no magic numbers.
+                _pending_retest_buy  = None   # RetestResult for LONG; set below
+                _pending_retest_sell = None   # RetestResult for SHORT; set below
                 try:
                     _rsm_state = state.livermore_state_4h if state is not None else None
                     if _rsm_state is not None:
-                        # Load modifier table once (cached on instance after first call)
+                        # ── Load config tables once (cached on instance) ────────────
                         if not hasattr(self, '_rsm_table'):
                             import json as _json_rsm
                             try:
@@ -3544,26 +3546,69 @@ Adds Governor + Volatility + Sniper checks to existing aggregator
                                 self._rsm_cap = _rsm_cfg.get(
                                     "REQUIRED_SCORE_MODIFIER", {}
                                 ).get("modifier_cap", 1.50)
-                            except Exception:
-                                self._rsm_table = {}
-                                self._rsm_cap   = 1.50
+                                # Instantiate RetestEngine with its config section
+                                from src.analysis.retest_engine import RetestEngine as _RE
+                                self._retest_engine = _RE(
+                                    _rsm_cfg.get("RETEST_ENGINE", {})
+                                )
+                            except Exception as _cfg_err:
+                                logger.debug("[RSM] config load error: %s", _cfg_err)
+                                self._rsm_table    = {}
+                                self._rsm_cap      = 1.50
+                                self._retest_engine = None
 
+                        # ── Layer 1: Livermore RSM delta ───────────────────────────
                         _rsm_delta = self._rsm_table.get(_rsm_state, 0.0)
-                        if _rsm_delta != 0.0:
+
+                        # ── Layer 2: Retest Engine (directional) ───────────────────
+                        _re = getattr(self, '_retest_engine', None)
+                        if _re is not None and state is not None:
+                            try:
+                                _pending_retest_buy  = _re.classify(
+                                    df, state, self.asset_type, direction=+1
+                                )
+                                _pending_retest_sell = _re.classify(
+                                    df, state, self.asset_type, direction=-1
+                                )
+                            except Exception as _re_err:
+                                logger.debug("[RETEST] classify error (non-blocking): %s", _re_err)
+
+                        # ── Combine and apply ──────────────────────────────────────
+                        _retest_buy_delta  = (
+                            _pending_retest_buy.modifier  if _pending_retest_buy  is not None else 0.0
+                        )
+                        _retest_sell_delta = (
+                            _pending_retest_sell.modifier if _pending_retest_sell is not None else 0.0
+                        )
+                        _total_buy_delta  = _rsm_delta + _retest_buy_delta
+                        _total_sell_delta = _rsm_delta + _retest_sell_delta
+
+                        if _total_buy_delta != 0.0 or _total_sell_delta != 0.0:
                             _base_buy  = self.config["buy_threshold"]
                             _base_sell = self.config["sell_threshold"]
                             adj_buy_thresh  = min(
                                 _base_buy  + self._rsm_cap,
-                                adj_buy_thresh  + _rsm_delta,
+                                adj_buy_thresh  + _total_buy_delta,
                             )
                             adj_sell_thresh = min(
                                 _base_sell + self._rsm_cap,
-                                adj_sell_thresh + _rsm_delta,
+                                adj_sell_thresh + _total_sell_delta,
+                            )
+                            _buy_rt  = (
+                                _pending_retest_buy.retest_type
+                                if _pending_retest_buy  is not None else "N/A"
+                            )
+                            _sell_rt = (
+                                _pending_retest_sell.retest_type
+                                if _pending_retest_sell is not None else "N/A"
                             )
                             logger.info(
-                                "[RSM] %s Livermore=%s → +%.2f modifier | "
+                                "[RSM+RETEST] %s Livermore=%s rsm=%.2f | "
+                                "buy=%s(\u0394%.2f) sell=%s(\u0394%.2f) | "
                                 "buy_thresh=%.2f sell_thresh=%.2f",
                                 self.asset_type, _rsm_state, _rsm_delta,
+                                _buy_rt, _retest_buy_delta,
+                                _sell_rt, _retest_sell_delta,
                                 adj_buy_thresh, adj_sell_thresh,
                             )
                 except Exception as _rsm_err:
@@ -3577,6 +3622,19 @@ Adds Governor + Volatility + Sniper checks to existing aggregator
 
                 reasoning = f"BUY (score:{buy_score:.2f}, thresh:{adj_buy_thresh:.2f})" if final_signal == 1 else f"SELL (score:{sell_score:.2f}, thresh:{adj_sell_thresh:.2f})" if final_signal == -1 else f"hold (buy:{buy_score:.2f} vs sell:{sell_score:.2f})"
                 original_signal = final_signal
+
+                # Write entry_type to CompositeState for VTM routing (Phase 3B).
+                # Directional: uses the retest result that matched final_signal direction.
+                if state is not None:
+                    try:
+                        if final_signal == 1 and _pending_retest_buy is not None:
+                            state.entry_type = _pending_retest_buy.entry_type
+                        elif final_signal == -1 and _pending_retest_sell is not None:
+                            state.entry_type = _pending_retest_sell.entry_type
+                        else:
+                            state.entry_type = None
+                    except Exception:
+                        pass
 
                 # ── CANDLE MOMENTUM REVERSAL GATE ───────────────────────────
                 # Mirror of the CMR veto in council_aggregator. Blocks a

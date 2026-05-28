@@ -1144,7 +1144,7 @@ class InstitutionalCouncilAggregator:
             sell_explanations.append(trend_exp['sell'])
             
             # Pass breakout flag and ADX to adaptive judges
-            buy_scores['structure'], sell_scores['structure'], structure_exp = self._judge_structure_bidirectional(df, is_breakout_mode, w_structure, adx)
+            buy_scores['structure'], sell_scores['structure'], structure_exp = self._judge_structure_bidirectional(df, is_breakout_mode, w_structure, adx, governor_data=governor_data)
             buy_explanations.append(structure_exp['buy'])
             sell_explanations.append(structure_exp['sell'])
             
@@ -1171,14 +1171,14 @@ class InstitutionalCouncilAggregator:
                     f"— overriding to trend-aligned momentum judge"
                 )
             if is_breakout_mode or is_trending_regime:
-                buy_scores['momentum'], sell_scores['momentum'], momentum_exp = self._judge_momentum_bidirectional(df, is_bull, is_breakout_mode, w_momentum, adx)
+                buy_scores['momentum'], sell_scores['momentum'], momentum_exp = self._judge_momentum_bidirectional(df, is_bull, is_breakout_mode, w_momentum, adx, governor_data=governor_data)
             else:
                 buy_scores['momentum'], sell_scores['momentum'], momentum_exp = self._judge_reversion_bidirectional(df, w_momentum)
             
             buy_explanations.append(momentum_exp['buy'])
             sell_explanations.append(momentum_exp['sell'])
             
-            buy_scores['pattern'], sell_scores['pattern'], pattern_exp = self._judge_pattern_bidirectional(df, w_pattern)
+            buy_scores['pattern'], sell_scores['pattern'], pattern_exp = self._judge_pattern_bidirectional(df, w_pattern, governor_data=governor_data)
             buy_explanations.append(pattern_exp['buy'])
             sell_explanations.append(pattern_exp['sell'])
             
@@ -2128,76 +2128,114 @@ class InstitutionalCouncilAggregator:
             logger.error(f"[TREND] Error: {e}")
             return 0.0, 0.0, {'buy': f"TREND: Error", 'sell': f"TREND: Error"}
     
-    def _judge_structure_bidirectional(self, df: pd.DataFrame, is_breakout_mode: bool, weight: float, adx: float = 20.0) -> Tuple[float, float, Dict]:
+    def _judge_structure_bidirectional(self, df: pd.DataFrame, is_breakout_mode: bool, weight: float, adx: float = 20.0, governor_data: Optional[Dict] = None) -> Tuple[float, float, Dict]:
         """
         JUDGE 2: STRUCTURE (Bidirectional & Adaptive)
+        Phase 3B: Reads pre-computed CompositeState fields when available.
+        MRS: "STRUCTURE judge reads bos_detected, level_defended,
+              rejection_at_level, failed_breakout from CompositeState
+              directly. No redundant raw-OHLCV recomputation in the judge."
+        Fallback: legacy BreakRetestValidator + raw OHLCV when composite_state absent.
         """
         try:
-            current_price = float(df['close'].iloc[-1])
             buy_score, sell_score = 0.0, 0.0
-            buy_exp, sell_exp = "STRUCT BUY: ❌ No signal", "STRUCT SELL: ❌ No signal"
+            buy_exp  = "STRUCT BUY: ❌ No signal"
+            sell_exp = "STRUCT SELL: ❌ No signal"
 
-            # ✨ NEW: Break-and-Retest Engine
-            br_res = self.break_retest_validator.validate(df, self.asset_type)
-            if br_res.is_valid:
-                if br_res.type == "BULLISH_RETEST":
-                    buy_score = min(buy_score + 0.4 * weight, weight)
-                    buy_exp = f"STRUCT BUY: ✨ {br_res.explanation} (Bonus)"
-                elif br_res.type == "BEARISH_RETEST":
-                    sell_score = min(sell_score + 0.4 * weight, weight)
-                    sell_exp = f"STRUCT SELL: ✨ {br_res.explanation} (Bonus)"
+            cs = (governor_data or {}).get("composite_state", {}) if governor_data else {}
 
-            if is_breakout_mode:
-                # --- BREAKOUT LOGIC: Has structure been broken? ---
-                if len(df) < 21:
-                    return 0.0, 0.0, {'buy': "STRUCT: Need 21 bars for breakout", 'sell': "STRUCT: Need 21 bars for breakout"}
-                
-                high_20 = df['high'].iloc[-21:-1].max()
-                low_20 = df['low'].iloc[-21:-1].min()
+            if cs:
+                # ── Phase 3B: CompositeState reads ────────────────────────────
+                bos_detected      = bool(cs.get("bos_detected",       False))
+                choch_detected    = bool(cs.get("choch_detected",     False))
+                level_defended    = bool(cs.get("level_defended",     False))
+                rej_at_level      = bool(cs.get("rejection_at_level", False))
+                failed_breakout   = bool(cs.get("failed_breakout",    False))
+                sweep_direction   = int(cs.get("sweep_direction",     0))
+                is_bullish_regime = bool((governor_data or {}).get("is_bullish", False))
 
-                if current_price > high_20:
+                # ── BUY scoring ───────────────────────────────────────────────
+                if bos_detected and (is_bullish_regime or is_breakout_mode) and not failed_breakout:
                     buy_score = weight
-                    buy_exp = f"STRUCT BUY: ✅ Breakout ({weight:.1f}) - Price > 20-bar high ${high_20:.2f}"
-                
-                if current_price < low_20:
+                    buy_exp   = f"STRUCT BUY: ✅ BOS confirmed ({weight:.1f})"
+                elif level_defended:
+                    buy_score = weight * 0.7
+                    buy_exp   = f"STRUCT BUY: ⚠️ Level defended ({buy_score:.1f})"
+                else:
+                    buy_exp   = "STRUCT BUY: ❌ No structural signal"
+                # Bullish spring bonus (wick swept lows, recovered above level)
+                if sweep_direction == 1 and buy_score < weight:
+                    buy_score = min(buy_score + 0.3 * weight, weight)
+                    buy_exp  += " +spring"
+
+                # ── SELL scoring ──────────────────────────────────────────────
+                if failed_breakout:
                     sell_score = weight
-                    sell_exp = f"STRUCT SELL: ✅ Breakdown ({weight:.1f}) - Price < 20-bar low ${low_20:.2f}"
+                    sell_exp   = f"STRUCT SELL: ✅ Failed breakout ({weight:.1f})"
+                elif rej_at_level:
+                    sell_score = weight * 0.7
+                    sell_exp   = f"STRUCT SELL: ⚠️ Rejected at level ({sell_score:.1f})"
+                else:
+                    sell_exp   = "STRUCT SELL: ❌ No structural signal"
+                # Bearish upthrust bonus (wick swept highs, rejected back below)
+                if sweep_direction == -1 and sell_score < weight:
+                    sell_score = min(sell_score + 0.3 * weight, weight)
+                    sell_exp  += " +upthrust"
+                # Change of character in bull regime = potential top
+                if choch_detected and is_bullish_regime:
+                    sell_score = min(sell_score + 0.3 * weight, weight)
+                    sell_exp  += " +CHoCH"
 
             else:
-                # --- NORMAL LOGIC: Is price reacting to an S/R level? ---
-                if not self.ai_validator:
-                    return 0.0, 0.0, {'buy': "STRUCT: AI disabled", 'sell': "STRUCT: AI disabled"}
+                # ── Fallback: legacy BreakRetestValidator + raw OHLCV ─────────
+                br_res = self.break_retest_validator.validate(df, self.asset_type)
+                if br_res.is_valid:
+                    if br_res.type == "BULLISH_RETEST":
+                        buy_score = min(buy_score + 0.4 * weight, weight)
+                        buy_exp   = f"STRUCT BUY: ✨ {br_res.explanation} (Bonus)"
+                    elif br_res.type == "BEARISH_RETEST":
+                        sell_score = min(sell_score + 0.4 * weight, weight)
+                        sell_exp   = f"STRUCT SELL: ✨ {br_res.explanation} (Bonus)"
 
-                # ✨ ADAPTIVE: ATR-based proximity scaling
-                high, low, close = df['high'].values, df['low'].values, df['close'].values
-                atr_fast = ta.ATR(high, low, close, timeperiod=14)[-1]
-                
-                # If trending (ADX > 25), be more lenient with distance
-                multiplier = 2.5 if adx > 25 else 1.5
-                threshold_val = (multiplier * atr_fast)
-                threshold_pct = threshold_val / current_price
-                
-                # Check for reaction at a SUPPORT level (for BUY)
-                sr_buy = self.ai_validator._check_support_resistance_fixed(
-                    asset=self.asset_type, df=df, current_price=current_price, signal=1, threshold=threshold_pct
-                )
-                if sr_buy.get('near_level'):
-                    level = sr_buy.get('nearest_level', 0)
-                    buy_score = weight
-                    buy_exp = f"STRUCT BUY: ✅ At Support ({weight:.1f}) - Near level ${level:.2f} (±{multiplier}*ATR)"
+                current_price = float(df['close'].iloc[-1])
+                if is_breakout_mode:
+                    if len(df) < 21:
+                        return 0.0, 0.0, {'buy': "STRUCT: Need 21 bars", 'sell': "STRUCT: Need 21 bars"}
+                    high_20 = df['high'].iloc[-21:-1].max()
+                    low_20  = df['low'].iloc[-21:-1].min()
+                    if current_price > high_20:
+                        buy_score = weight
+                        buy_exp   = f"STRUCT BUY: ✅ Breakout ({weight:.1f}) - Price > 20-bar high ${high_20:.2f}"
+                    if current_price < low_20:
+                        sell_score = weight
+                        sell_exp   = f"STRUCT SELL: ✅ Breakdown ({weight:.1f}) - Price < 20-bar low ${low_20:.2f}"
                 else:
-                    buy_exp = "STRUCT BUY: ❌ No support nearby"
-                
-                # Check for reaction at a RESISTANCE level (for SELL)
-                sr_sell = self.ai_validator._check_support_resistance_fixed(
-                    asset=self.asset_type, df=df, current_price=current_price, signal=-1, threshold=threshold_pct
-                )
-                if sr_sell.get('near_level'):
-                    level = sr_sell.get('nearest_level', 0)
-                    sell_score = weight
-                    sell_exp = f"STRUCT SELL: ✅ At Resistance ({weight:.1f}) - Near level ${level:.2f} (±{multiplier}*ATR)"
-                else:
-                    sell_exp = "STRUCT SELL: ❌ No resistance nearby"
+                    if not self.ai_validator:
+                        return 0.0, 0.0, {'buy': "STRUCT: AI disabled", 'sell': "STRUCT: AI disabled"}
+                    high, low, close = df['high'].values, df['low'].values, df['close'].values
+                    atr_fast      = ta.ATR(high, low, close, timeperiod=14)[-1]
+                    multiplier    = 2.5 if adx > 25 else 1.5
+                    threshold_pct = (multiplier * atr_fast) / current_price
+                    sr_buy = self.ai_validator._check_support_resistance_fixed(
+                        asset=self.asset_type, df=df, current_price=current_price,
+                        signal=1, threshold=threshold_pct
+                    )
+                    if sr_buy.get('near_level'):
+                        lvl = sr_buy.get('nearest_level', 0)
+                        buy_score = weight
+                        buy_exp   = f"STRUCT BUY: ✅ At Support ({weight:.1f}) - Near level ${lvl:.2f} (±{multiplier}*ATR)"
+                    else:
+                        buy_exp   = "STRUCT BUY: ❌ No support nearby"
+                    sr_sell = self.ai_validator._check_support_resistance_fixed(
+                        asset=self.asset_type, df=df, current_price=current_price,
+                        signal=-1, threshold=threshold_pct
+                    )
+                    if sr_sell.get('near_level'):
+                        lvl = sr_sell.get('nearest_level', 0)
+                        sell_score = weight
+                        sell_exp   = f"STRUCT SELL: ✅ At Resistance ({weight:.1f}) - Near level ${lvl:.2f} (±{multiplier}*ATR)"
+                    else:
+                        sell_exp   = "STRUCT SELL: ❌ No resistance nearby"
 
             return buy_score, sell_score, {'buy': buy_exp, 'sell': sell_exp}
 
@@ -2205,7 +2243,7 @@ class InstitutionalCouncilAggregator:
             logger.error(f"[STRUCTURE] Error: {e}", exc_info=True)
             return 0.0, 0.0, {'buy': "STRUCT: Error", 'sell': "STRUCT: Error"}
     
-    def _judge_momentum_bidirectional(self, df: pd.DataFrame, is_bull: bool, is_breakout_mode: bool, weight: float, adx: float) -> Tuple[float, float, Dict]:
+    def _judge_momentum_bidirectional(self, df: pd.DataFrame, is_bull: bool, is_breakout_mode: bool, weight: float, adx: float, governor_data: Optional[Dict] = None) -> Tuple[float, float, Dict]:
         """
         JUDGE 3: MOMENTUM (Bidirectional & Adaptive)
         """
@@ -2287,24 +2325,89 @@ class InstitutionalCouncilAggregator:
                 if sell_score > 0 and macd < macd_signal:
                     sell_score = min(sell_score + 0.2, weight)
                     sell_exp += " +MACD"
-            
+
+            # ── Phase 3B: CompositeState momentum enrichment ───────────────────
+            # MRS: "conviction_dying reduces momentum score regardless of direction.
+            #       vpd_diverging reduces score in trend direction.
+            #       cvd_trend gives a small directional boost."
+            cs = (governor_data or {}).get("composite_state", {}) if governor_data else {}
+            if cs:
+                conviction_dying = bool(cs.get("conviction_dying", False))
+                vpd_diverging    = bool(cs.get("vpd_diverging",    False))
+                cvd_trend        = int(cs.get("cvd_trend",          0))
+
+                if conviction_dying:
+                    # Shrinking candle bodies = conviction dying; penalise both
+                    penalty    = 0.20 * weight
+                    buy_score  = max(0.0, buy_score  - penalty)
+                    sell_score = max(0.0, sell_score - penalty)
+                    buy_exp   += " -conviction_dying"
+                    sell_exp  += " -conviction_dying"
+
+                if vpd_diverging:
+                    # Price moves but volume disagrees — penalise trend direction
+                    div_penalty = 0.15 * weight
+                    if is_bull:
+                        buy_score  = max(0.0, buy_score  - div_penalty)
+                        buy_exp   += " -vpd_div"
+                    else:
+                        sell_score = max(0.0, sell_score - div_penalty)
+                        sell_exp  += " -vpd_div"
+
+                if cvd_trend > 0:
+                    buy_score  = min(buy_score  + 0.15 * weight, weight)
+                    buy_exp   += " +cvd"
+                elif cvd_trend < 0:
+                    sell_score = min(sell_score + 0.15 * weight, weight)
+                    sell_exp  += " +cvd"
+
             return buy_score, sell_score, {'buy': buy_exp, 'sell': sell_exp}
             
         except Exception as e:
             logger.error(f"[MOMENTUM] Error: {e}", exc_info=True)
             return 0.0, 0.0, {'buy': "MOM: Error", 'sell': "MOM: Error"}
     
-    def _judge_pattern_bidirectional(self, df: pd.DataFrame, weight: float) -> Tuple[float, float, Dict]:
+    def _judge_pattern_bidirectional(self, df: pd.DataFrame, weight: float, governor_data: Optional[Dict] = None) -> Tuple[float, float, Dict]:
         """
         JUDGE 4: PATTERN (Bidirectional)
+        Phase 3B: Reads institutional_pattern from performance aggregator first.
+        MRS: "PATTERN judge reads institutional_pattern from performance aggregator.
+              ACCUMULATION confirmed = PATTERN judge scores it.
+              This connection was completely absent."
+        Fallback: ai_validator._check_pattern() when institutional_pattern is None.
         """
         try:
+            buy_score  = 0.0
+            sell_score = 0.0
+
+            # ── Phase 3B: institutional_pattern from performance aggregator ────
+            inst_pattern = (governor_data or {}).get("institutional_pattern") if governor_data else None
+            if inst_pattern is not None:
+                if inst_pattern == "ACCUMULATION":
+                    buy_score = weight
+                    return buy_score, sell_score, {
+                        'buy':  f"PATTERN BUY: ✅ ACCUMULATION ({weight:.1f}) — institutional buying",
+                        'sell': "PATTERN SELL: ❌ No pattern (ACCUMULATION context)",
+                    }
+                elif inst_pattern == "DISTRIBUTION":
+                    sell_score = weight
+                    return buy_score, sell_score, {
+                        'buy':  "PATTERN BUY: ❌ No pattern (DISTRIBUTION context)",
+                        'sell': f"PATTERN SELL: ✅ DISTRIBUTION ({weight:.1f}) — institutional selling",
+                    }
+                elif inst_pattern in ("COMPRESSION", "CONSOLIDATION"):
+                    buy_score  = weight * 0.5
+                    sell_score = weight * 0.5
+                    return buy_score, sell_score, {
+                        'buy':  f"PATTERN BUY: ⚠️ {inst_pattern} ({buy_score:.1f}) — range bound",
+                        'sell': f"PATTERN SELL: ⚠️ {inst_pattern} ({sell_score:.1f}) — range bound",
+                    }
+                # Unknown institutional_pattern string → fall through to ai_validator
+
+            # ── Fallback: ai_validator pattern check (legacy path) ─────────────
             if not self.ai_validator:
                 return 0.0, 0.0, {'buy': "PATTERN: AI disabled", 'sell': "PATTERN: AI disabled"}
-            
-            buy_score = 0.0
-            sell_score = 0.0
-            
+
             # Check bullish pattern
             pattern_buy = self.ai_validator._check_pattern(
                 df=df,
