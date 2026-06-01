@@ -371,6 +371,27 @@
       "dual_confirm": 2,
       "atr_period": 14,
       "_calibration": "USTEC default — run calibration when 4H data available"
+    },
+    "GBPAUD": {
+      "major_mult": 3.0,
+      "minor_mult": 1.0,
+      "dual_confirm": 2,
+      "atr_period": 14,
+      "_calibration": "FX default — same as EURUSD, run calibration when 4H data available"
+    },
+    "GBPUSD": {
+      "major_mult": 3.0,
+      "minor_mult": 1.0,
+      "dual_confirm": 2,
+      "atr_period": 14,
+      "_calibration": "FX default — run calibration when 4H data available"
+    },
+    "USOIL": {
+      "major_mult": 3.5,
+      "minor_mult": 1.2,
+      "dual_confirm": 2,
+      "atr_period": 14,
+      "_calibration": "Commodity default — run calibration when 4H data available"
     }
   },
   "REQUIRED_SCORE_MODIFIER": {

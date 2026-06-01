@@ -273,6 +273,9 @@ class TradingBot:
         self.last_trade_date = None
         self.last_trade_times = {}
         self.last_market_status_log = {}  # Per-asset logging dictionary
+        # Livermore state at time of last trade — used for cooldown transition detection.
+        # Format: {asset_name: str}  e.g. {"GOLD": "MAIN_UP", "BTC": "SECONDARY_REBOUND"}
+        self._last_livermore_states: dict = {}
 
         # Session-open cooldown tracking (MT5 assets only)
         # Tracks when each asset's market was first seen as "open" after being
@@ -656,7 +659,7 @@ class TradingBot:
                 # Look back far enough to cover the longest possible cooldown
                 max_cooldown_h = max(
                     self.config.get("trading", {}).get(
-                        "min_time_between_trades_minutes", 480
+                        "min_time_between_trades_minutes", 240
                     ),
                     120,          # hard floor: never look back less than 2 hours
                 ) / 60.0 * 1.2   # 20 % buffer
@@ -1207,10 +1210,10 @@ class TradingBot:
 
             elif mode == "council":
                 # --------------------------------------------------------
-                # COUNCIL MODE (New institutional aggregator)
+                # COUNCIL MODE (Institutional aggregator + LSM companion)
                 # --------------------------------------------------------
                 try:
-                    self.aggregators[asset_name] = InstitutionalCouncilAggregator(
+                    _council_agg = InstitutionalCouncilAggregator(
                         mean_reversion_strategy=strategies.get("mean_reversion"),
                         trend_following_strategy=strategies.get("trend_following"),
                         ema_strategy=strategies.get("ema_strategy"),
@@ -1221,23 +1224,44 @@ class TradingBot:
                         enable_detailed_logging=getattr(
                             self, "detailed_logging", False
                         ),
-                        # Council-specific settings
-                        config=preset_config,  # ✅ CORRECT: Pass config for dynamic thresholds
+                        config=preset_config,
                         trend_aligned_threshold=trend_threshold,
                         counter_trend_threshold=counter_threshold,
                         weight_structure=1.0,
                         weight_momentum=1.5,
-                        mtf_integration=self.mtf_integration,  # ✅ FIX: Wire MTF so _check_macro_regime works
+                        mtf_integration=self.mtf_integration,
                         performance_tracker=self.portfolio_manager.performance_tracker,
                         use_macro_governor=use_macro_gov,
                         use_gatekeeper=use_gatekeeper
                     )
+                    # Lightweight companion for Livermore state machines + composite_state.
+                    # Council aggregator has no Livermore of its own — without this companion
+                    # all council-mode assets stay in LEGACY(warmup) forever.
+                    _lsm_companion = PerformanceWeightedAggregator(
+                        mean_reversion_strategy=strategies.get("mean_reversion"),
+                        trend_following_strategy=strategies.get("trend_following"),
+                        ema_strategy=strategies.get("ema_strategy"),
+                        volume_flow_strategy=strategies.get("volume_flow"),
+                        asset_type=asset_name,
+                        config=preset_config,
+                        ai_validator=None,
+                        mtf_integration=self.mtf_integration,
+                        enable_world_class_filters=False,
+                        enable_ai_circuit_breaker=False,
+                        enable_detailed_logging=False,
+                        use_macro_governor=False,
+                        use_gatekeeper=False,
+                    )
+                    self.aggregators[asset_name] = {
+                        "council":  _council_agg,
+                        "livermore": _lsm_companion,
+                        "mode": "council",
+                    }
 
-                    logger.info(f"  Type:       Council Aggregator")
+                    logger.info(f"  Type:       Council Aggregator + LSM companion")
                     logger.info(
                         f"  AI:         {'Enabled' if ai_validator else 'Disabled'}"
                     )
-                    # Log the actual active thresholds
                     thresh_trend = preset_config.get("council_trend_aligned", 3.5)
                     thresh_count = preset_config.get("council_counter_trend", 4.0)
                     logger.info(
@@ -2085,7 +2109,10 @@ class TradingBot:
                 _lsm_1h_state = None
                 try:
                     _agg = self.aggregators.get(asset_name)
-                    _pagg = _agg.get("performance") if isinstance(_agg, dict) else _agg
+                    if isinstance(_agg, dict):
+                        _pagg = _agg.get("performance") or _agg.get("livermore")
+                    else:
+                        _pagg = _agg
                     if _pagg is not None and hasattr(_pagg, "_livermore_1h"):
                         _snap = _pagg._livermore_1h.snapshot() if _pagg._livermore_1h else None
                         if _snap:
@@ -2538,6 +2565,9 @@ class TradingBot:
             _old_perf_for_lsm  = None
             if isinstance(current_aggregator, dict) and current_aggregator.get("mode") == "hybrid":
                 _old_perf_for_lsm = current_aggregator.get("performance")
+            elif isinstance(current_aggregator, dict) and current_aggregator.get("mode") == "council":
+                # Council mode stores a lightweight livermore companion alongside the council agg.
+                _old_perf_for_lsm = current_aggregator.get("livermore")
             elif hasattr(current_aggregator, "_livermore_4h"):
                 _old_perf_for_lsm = current_aggregator
 
@@ -2625,6 +2655,7 @@ class TradingBot:
 
             elif mode_to_init == "council":
                 # COUNCIL MODE
+                # Create the council aggregator for signal decisions.
                 new_aggregator = InstitutionalCouncilAggregator(
                     mean_reversion_strategy=strategies.get("mean_reversion"),
                     trend_following_strategy=strategies.get("trend_following"),
@@ -2635,14 +2666,48 @@ class TradingBot:
                     config=preset_config,
                     trend_aligned_threshold=trend_threshold,
                     counter_trend_threshold=counter_threshold,
-                    mtf_integration=self.mtf_integration,  # ✅ FIX: Wire MTF so _check_macro_regime works
+                    mtf_integration=self.mtf_integration,
                     performance_tracker=self.portfolio_manager.performance_tracker,
                     use_macro_governor=use_macro_gov,
                     use_gatekeeper=use_gatekeeper
                 )
-                self.aggregators[asset_name] = new_aggregator
+                # Create a lightweight PerformanceWeightedAggregator companion whose sole
+                # purpose is to own the Livermore state machines and build composite_state.
+                # The council aggregator has no Livermore of its own — without this companion,
+                # all council-mode assets stay in Livermore warmup forever (Phase 3A/3B gates
+                # never fire) because composite_state is never injected into governor_data.
+                lsm_companion = PerformanceWeightedAggregator(
+                    mean_reversion_strategy=strategies.get("mean_reversion"),
+                    trend_following_strategy=strategies.get("trend_following"),
+                    ema_strategy=strategies.get("ema_strategy"),
+                    volume_flow_strategy=strategies.get("volume_flow"),
+                    asset_type=asset_type,
+                    config=preset_config,
+                    ai_validator=ai_validator,
+                    mtf_integration=self.mtf_integration,
+                    enable_world_class_filters=False,
+                    enable_ai_circuit_breaker=False,
+                    enable_detailed_logging=False,
+                    use_macro_governor=False,
+                    use_gatekeeper=False,
+                )
+                # Transfer warmed Livermore state to the companion.
+                if _old_lsm_warmed:
+                    lsm_companion._livermore_4h         = _old_livermore_4h
+                    lsm_companion._livermore_1h         = _old_livermore_1h
+                    lsm_companion._livermore_last_4h_ts = _old_livermore_ts
+                    lsm_companion._livermore_warmed     = True
+                    logger.info(
+                        f"[AUTO PRESET] ✓ Livermore state transferred to council LSM companion "
+                        f"for {asset_name}"
+                    )
+                self.aggregators[asset_name] = {
+                    "council":  new_aggregator,
+                    "livermore": lsm_companion,
+                    "mode": "council",
+                }
                 logger.info(
-                    f"[AUTO PRESET] ✓ Council aggregator refreshed for {asset_name}"
+                    f"[AUTO PRESET] ✓ Council aggregator + LSM companion refreshed for {asset_name}"
                 )
 
             else:
@@ -3314,6 +3379,12 @@ class TradingBot:
                             # trade fire as soon as all positions were manually closed.
                             if pyramid_ok:
                                 self.last_trade_times[asset_name] = datetime.now()
+                                # Snapshot Livermore state for pyramid entries too.
+                                _pyr_cs = self._current_regime_data.get(asset_name, {}).get("composite_state") if hasattr(self, "_current_regime_data") else None
+                                if _pyr_cs is not None:
+                                    _pyr_lsm = getattr(_pyr_cs, "livermore_state_1h", None) or getattr(_pyr_cs, "livermore_state_4h", None)
+                                    if _pyr_lsm is not None:
+                                        self._last_livermore_states[asset_name] = _pyr_lsm.value if hasattr(_pyr_lsm, "value") else _pyr_lsm
 
                 except Exception as e:
                     logger.error(f"[VTM LOOP] Error checking {asset_name} (Position: {position_id}): {e}")
@@ -3680,35 +3751,54 @@ class TradingBot:
 
         return True
 
-    def check_min_time_between_trades(self, asset_name: str) -> bool:
+    def check_min_time_between_trades(
+        self, asset_name: str, current_lsm_state: str | None = None
+    ) -> bool:
         """Check minimum time between trades.
 
         Returns True  → OK to trade (no cooldown active).
         Returns False → blocked (cooldown still running).
 
-        Cooldown is unconditional — it applies regardless of portfolio state,
-        regime, or how the last position was closed.  No bypasses.  No overrides.
-        The global default is 480 minutes (8 hours).  Per-asset config override
-        is permitted but must be set explicitly — there is no automatic halving.
-        """
-        global_default = self.config["trading"].get("min_time_between_trades_minutes", 480)
+        Global default: 240 minutes (4 hours).  Per-asset config override still
+        respected when set explicitly.
 
-        # Per-asset override permitted only via explicit config — no automatic reduction.
+        Adaptive reduction: if the Livermore state has transitioned since the last
+        trade (genuine new structure), the effective cooldown drops to 180 min — the
+        structural guards (hard veto, RSM, ADX gate) are sufficient to prevent churn
+        in a legitimately different regime.  Same state = full cooldown applies.
+        """
+        global_default = self.config["trading"].get("min_time_between_trades_minutes", 240)
+
+        # Per-asset override permitted only via explicit config.
         asset_cfg = self.config.get("assets", {}).get(asset_name, {})
-        min_minutes = asset_cfg.get("min_time_between_trades_minutes", global_default)
+        base_minutes = asset_cfg.get("min_time_between_trades_minutes", global_default)
 
         # If the asset has never traded this session it cannot be in cooldown.
         if asset_name not in self.last_trade_times:
             return True
 
-        # Unconditional elapsed-time check — portfolio state is irrelevant.
-        # The no-positions bypass was removed: a flat portfolio is not a reason
-        # to skip cooldown.  Doing so allowed the bot to churn trades rapidly
-        # after every TP/SL hit, compounding losses across multiple entries.
+        # Adaptive cooldown: genuine Livermore state transition → shorter window.
+        prev_state = self._last_livermore_states.get(asset_name)
+        if (
+            current_lsm_state is not None
+            and prev_state is not None
+            and current_lsm_state != prev_state
+        ):
+            min_minutes = min(base_minutes, 180)
+            logger.info(
+                f"[COOLDOWN] {asset_name}: Livermore transition {prev_state}→{current_lsm_state} "
+                f"— reduced cooldown to {min_minutes:.0f}min"
+            )
+        else:
+            min_minutes = base_minutes
+
         elapsed = datetime.now() - self.last_trade_times[asset_name]
         if elapsed.total_seconds() < min_minutes * 60:
             remaining = min_minutes - (elapsed.total_seconds() / 60)
-            logger.info(f"[COOLDOWN] {asset_name}: {remaining:.0f}min remaining (limit={min_minutes:.0f}min)")
+            logger.info(
+                f"[COOLDOWN] {asset_name}: {remaining:.0f}min remaining "
+                f"(limit={min_minutes:.0f}min, lsm={current_lsm_state or 'unknown'})"
+            )
             return False
 
         # Cooldown period has fully elapsed — allow trading.
@@ -3995,9 +4085,28 @@ class TradingBot:
                     hybrid_selector=self.hybrid_selector,
                     live_price=current_price
                 )
+            elif isinstance(aggregator, dict) and aggregator.get("mode") == "council":
+                # COUNCIL MODE with LSM companion.
+                # Build composite_state from the companion PerformanceWeightedAggregator so
+                # MR/TF strategy routing and council judges receive Livermore context.
+                _lsm_comp = aggregator.get("livermore")
+                if _lsm_comp is not None and hasattr(_lsm_comp, "_build_composite_state"):
+                    try:
+                        _cs = _lsm_comp._build_composite_state(df, mtf_regime.get("df_4h"), mtf_regime)
+                        mtf_regime["composite_state"] = _cs
+                    except Exception as _cs_err:
+                        logger.debug("[council] composite_state build failed for %s: %s", asset_name, _cs_err)
+                signal, details = aggregator["council"].get_aggregated_signal(
+                    df,
+                    current_regime=mtf_regime.get("regime", "NEUTRAL"),
+                    is_bull_market=mtf_regime.get("is_bull", False),
+                    governor_data=mtf_regime,
+                    live_price=current_price
+                )
+                details["aggregator_mode"] = "council"
+
             else:
-                # SINGLE AGGREGATOR MODE:
-                # Both Council and Performance aggregators now accept full context
+                # PERFORMANCE / plain council (non-dict) mode
                 signal, details = aggregator.get_aggregated_signal(
                     df,
                     current_regime=mtf_regime.get("regime", "NEUTRAL"),
@@ -4005,11 +4114,6 @@ class TradingBot:
                     governor_data=mtf_regime,
                     live_price=current_price
                 )
-                # ✅ FIX: Stamp engine label immediately after aggregator runs.
-                # Previously this stamp was absent from trade_asset (it existed only
-                # in _update_asset_signal), so when _notify_blocked fired for a blocked
-                # council signal it found aggregator_mode missing and the hybrid_selector
-                # fallback always wrote "performance" → Telegram always showed [PERF].
                 details["aggregator_mode"] = (
                     "council"
                     if isinstance(aggregator, InstitutionalCouncilAggregator)
@@ -4321,6 +4425,16 @@ class TradingBot:
             # ============================================================
             # 4. Check Trading Limits & Cooldowns
             # ============================================================
+            # Extract current Livermore state for adaptive cooldown comparison.
+            # Prefer 1H state (entry timeframe); fall back to 4H if absent.
+            _regime_now = self._current_regime_data.get(asset_name, {}) if hasattr(self, "_current_regime_data") else {}
+            _cs_now = _regime_now.get("composite_state")
+            _current_lsm = None
+            if _cs_now is not None:
+                _current_lsm = getattr(_cs_now, "livermore_state_1h", None) or getattr(_cs_now, "livermore_state_4h", None)
+                if _current_lsm is not None and hasattr(_current_lsm, "value"):
+                    _current_lsm = _current_lsm.value  # unwrap Enum → str
+
             if not self.check_trading_limits():
                 logger.info(f"[LIMIT] Trading limits reached")
                 self._notify_blocked(
@@ -4340,7 +4454,7 @@ class TradingBot:
                 )
                 return
 
-            if not self.check_min_time_between_trades(asset_name):
+            if not self.check_min_time_between_trades(asset_name, current_lsm_state=_current_lsm):
                 logger.info(f"[COOLDOWN] {asset_name} is in cooldown")
                 self._notify_blocked(
                     asset=asset_name,
@@ -4516,6 +4630,9 @@ class TradingBot:
                 # Update internal counters
                 self.trade_count_today += 1
                 self.last_trade_times[asset_name] = datetime.now()
+                # Record Livermore state at entry — used by adaptive cooldown on next signal.
+                if _current_lsm is not None:
+                    self._last_livermore_states[asset_name] = _current_lsm
 
                 logger.info(
                     f"[SUCCESS] {asset_name} Trade Executed "
@@ -4989,8 +5106,25 @@ class TradingBot:
                     hybrid_selector=self.hybrid_selector,
                     live_price=current_price
                 )
+            elif isinstance(aggregator, dict) and aggregator.get("mode") == "council":
+                # COUNCIL MODE with LSM companion — build composite_state first.
+                _lsm_comp = aggregator.get("livermore")
+                if _lsm_comp is not None and hasattr(_lsm_comp, "_build_composite_state"):
+                    try:
+                        _cs = _lsm_comp._build_composite_state(df, mtf_regime.get("df_4h"), mtf_regime)
+                        mtf_regime["composite_state"] = _cs
+                    except Exception as _cs_err:
+                        logger.debug("[council] composite_state build failed for %s: %s", asset_name, _cs_err)
+                signal, details = aggregator["council"].get_aggregated_signal(
+                    df,
+                    current_regime=mtf_regime.get("regime", "NEUTRAL"),
+                    is_bull_market=mtf_regime.get("is_bull", False),
+                    governor_data=mtf_regime,
+                    live_price=current_price
+                )
+                details["aggregator_mode"] = "council"
             else:
-                # SINGLE AGGREGATOR MODE:
+                # PERFORMANCE or plain council (non-dict) mode
                 if isinstance(aggregator, InstitutionalCouncilAggregator):
                     signal, details = aggregator.get_aggregated_signal(
                         df,
@@ -4999,7 +5133,6 @@ class TradingBot:
                         governor_data=mtf_regime,
                         live_price=current_price
                     )
-                    # Stamp the engine label so charts + Telegram always know the source
                     details["aggregator_mode"] = "council"
                 else:
                     # Performance mode — pass full MTF regime context so regime/confidence
@@ -5011,7 +5144,6 @@ class TradingBot:
                         governor_data=mtf_regime,
                         live_price=current_price
                     )
-                    # Stamp the engine label so charts + Telegram always know the source
                     details["aggregator_mode"] = "performance"
             # T3.1: Shadow trade — open virtual position for every blocked signal
             # so we can measure what gates are costing us in real P&L terms.
@@ -5393,6 +5525,9 @@ class TradingBot:
             target_agg = aggregator
             if isinstance(aggregator, dict) and aggregator.get("mode") == "hybrid":
                 target_agg = aggregator.get("performance")
+            elif isinstance(aggregator, dict) and aggregator.get("mode") == "council":
+                # Council mode stores Livermore in the companion PerformanceWeightedAggregator.
+                target_agg = aggregator.get("livermore")
             if target_agg is None or not hasattr(target_agg, 'warm_start_livermore'):
                 continue
             try:

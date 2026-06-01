@@ -1089,25 +1089,29 @@ class InstitutionalCouncilAggregator:
                 w_pattern = 0.75   # ✨ Balanced pattern weight
                 if self.detailed_logging: logger.info(f"[COUNCIL] ⚖️ DYNAMIC WEIGHTS APPLIED: {consensus_regime}")
 
-            # Pass 4H context if available in governor_data
+            # Pass 4H context and composite_state (Livermore) from governor_data.
+            # composite_state is built by the LSM companion PerformanceWeightedAggregator
+            # in main.py before the council aggregator is called — without it, MR strategy
+            # always falls back to LEGACY(warmup) mode and Phase 3A/3B gates never fire.
             df_4h = governor_data.get('df_4h') if governor_data else None
+            _composite_state = (governor_data or {}).get("composite_state")
 
             if self.s_mean_reversion:
                 try:
-                    mr_signal, mr_conf = self.s_mean_reversion.generate_signal(df, df_4h=df_4h)
+                    mr_signal, mr_conf = self.s_mean_reversion.generate_signal(
+                        df, df_4h=df_4h, composite_state=_composite_state
+                    )
                 except Exception as e:
                     logger.error(f"[COUNCIL] MR signal error: {e}")
-            
+
             if self.s_trend_following:
                 try:
                     tf_signal, tf_conf = self.s_trend_following.generate_signal(df, df_4h=df_4h)
                 except Exception as e:
                     logger.error(f"[COUNCIL] TF signal error: {e}")
-            
+
             if self.s_ema:
                 try:
-                    # Pass 4H context if available in governor_data
-                    df_4h = governor_data.get('df_4h') if governor_data else None
                     ema_signal, ema_conf = self.s_ema.generate_signal(df, df_4h=df_4h)
                 except Exception as e:
                     logger.error(f"[COUNCIL] EMA signal error: {e}")
