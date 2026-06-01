@@ -5505,28 +5505,100 @@ class TradingBot:
 
     # ── Phase 1: Livermore warm-start ─────────────────────────────────────────
 
+    def _load_lsm_csv(self, asset_name: str, symbol: str, tf_suffix: str, expected_hours: int):
+        """
+        Load a local CSV for Livermore warm-start, trying both the MT5 symbol name
+        and the plain asset name. Validates actual bar spacing so mislabeled files
+        (e.g. 1H bars saved under a _4h.csv filename) are silently rejected.
+
+        Returns a cleaned DataFrame ready for LSM replay, or None if no valid file found.
+        """
+        import pandas as _pd
+        from pathlib import Path as _Path
+
+        raw_dir = _Path("data/raw")
+        candidates = [
+            raw_dir / f"{symbol}_{tf_suffix}.csv",    # e.g. GBPAUDm_4h.csv
+            raw_dir / f"{asset_name}_{tf_suffix}.csv", # e.g. GBPAUD_4h.csv
+        ]
+        best_df = None
+        for _path in candidates:
+            if not _path.exists():
+                continue
+            try:
+                _df = _pd.read_csv(_path, index_col=0, parse_dates=True)
+                _df.columns = [c.lower() for c in _df.columns]
+                if len(_df) < 20:
+                    continue
+                # Validate bar spacing — reject mislabeled files.
+                # Allow 50%–200% of the expected interval so daylight-saving
+                # gaps and weekend gaps don't disqualify good files.
+                if len(_df) >= 2:
+                    _spacing = (_df.index[-1] - _df.index[-2]).total_seconds()
+                    _expected = expected_hours * 3600
+                    if not (_expected * 0.5 <= _spacing <= _expected * 2.0):
+                        logger.debug(
+                            "[Livermore CSV] %s skipped — spacing %.0fs != %dH",
+                            _path.name, _spacing, expected_hours,
+                        )
+                        continue
+                # Keep the file with the most bars (deepest history)
+                if best_df is None or len(_df) > len(best_df):
+                    best_df = _df
+                    logger.info(
+                        "[Livermore CSV] ✓ %s — %d bars  %s → %s",
+                        _path.name, len(_df),
+                        str(_df.index[0])[:10], str(_df.index[-1])[:10],
+                    )
+            except Exception as _csv_err:
+                logger.debug("[Livermore CSV] %s load failed: %s", _path.name, _csv_err)
+
+        return best_df
+
+    def _merge_lsm_data(self, csv_df, api_df):
+        """
+        Merge CSV history with API data. CSV provides depth; API provides recency.
+        Drops duplicates, sorts chronologically, returns combined DataFrame.
+        """
+        import pandas as _pd
+        if csv_df is None and api_df is None:
+            return None
+        if csv_df is None:
+            return api_df
+        if api_df is None:
+            return csv_df
+        try:
+            combined = _pd.concat([csv_df, api_df])
+            combined = combined[~combined.index.duplicated(keep="last")]
+            combined = combined.sort_index()
+            return combined
+        except Exception:
+            return api_df  # fall back to API data if merge fails
+
     def _warm_start_livermore_all_assets(self) -> None:
         """
         Replay historical bars through each aggregator's Livermore state machines
         so they begin from the correct structural state on bot startup.
 
-        Called once in start(), immediately before the first run_trading_cycle().
-        Uses the same fetch helpers as the main loop (_fetch_4h_data + Binance/MT5
-        1H fetch) so the warm-start data path is identical to the live data path.
+        Data priority (most → least preferred):
+          1. Local CSV (data/raw/) — continuously updated by the historical updater,
+             provides months/years of history for reliable anchor prices.
+          2. Live API fetch — supplements the CSV with bars newer than the last CSV row.
+
+        Bar spacing validation rejects mislabeled files (e.g. 1H bars saved under
+        a _4h.csv filename) so only properly structured data reaches the LSM.
 
         Failures are non-fatal — the state machines will converge over time
         even starting cold from MAIN_UP.
         """
-        logger.info("[Livermore] Starting warm-up for all assets...")
+        logger.info("[Livermore] Starting warm-up for all assets (CSV-first)...")
         warmed = 0
         for asset_name, aggregator in self.aggregators.items():
-            # Hybrid mode stores aggregators as {"performance": ..., "council": ..., "mode": "hybrid"}.
-            # Unwrap to reach the PerformanceWeightedAggregator which owns warm_start_livermore.
+            # Unwrap the PerformanceWeightedAggregator that owns warm_start_livermore.
             target_agg = aggregator
             if isinstance(aggregator, dict) and aggregator.get("mode") == "hybrid":
                 target_agg = aggregator.get("performance")
             elif isinstance(aggregator, dict) and aggregator.get("mode") == "council":
-                # Council mode stores Livermore in the companion PerformanceWeightedAggregator.
                 target_agg = aggregator.get("livermore")
             if target_agg is None or not hasattr(target_agg, 'warm_start_livermore'):
                 continue
@@ -5538,18 +5610,18 @@ class TradingBot:
                 exchange = asset_cfg.get("exchange", "binance")
                 symbol   = self._resolve_symbol(asset_name)
                 end_time   = datetime.now(timezone.utc)
-                # 90 days of 4H = ~540 bars — enough to reach correct state
-                start_4h   = (end_time - timedelta(days=90)).strftime("%Y-%m-%d")
-                # 30 days of 1H = ~720 bars
-                start_1h   = (end_time - timedelta(days=30)).strftime("%Y-%m-%d")
                 end_str    = end_time.strftime("%Y-%m-%d %H:%M:%S")
 
-                # ── 4H data ──────────────────────────────────────────────────
-                df_4h = self._fetch_4h_data(asset_name)
+                # ── 4H: CSV first, then API to fill the gap to today ─────────
+                csv_4h = self._load_lsm_csv(asset_name, symbol, "4h", 4)
+                api_4h = self._fetch_4h_data(asset_name)
+                df_4h  = self._merge_lsm_data(csv_4h, api_4h)
 
-                # ── 1H data ──────────────────────────────────────────────────
-                df_1h = None
+                # ── 1H: CSV first, then API to fill the gap to today ─────────
+                csv_1h = self._load_lsm_csv(asset_name, symbol, "1h", 1)
+                df_1h_api = None
                 try:
+                    start_1h = (end_time - timedelta(days=30)).strftime("%Y-%m-%d")
                     if exchange == "binance":
                         _raw = self.data_manager.fetch_binance_data(
                             symbol=symbol, interval="1h",
@@ -5560,9 +5632,17 @@ class TradingBot:
                             symbol=symbol, timeframe="H1",
                             start_date=start_1h, end_date=end_str,
                         )
-                    df_1h = self.data_manager.clean_data(_raw) if _raw is not None and len(_raw) > 0 else None
+                    df_1h_api = self.data_manager.clean_data(_raw) if _raw is not None and len(_raw) > 0 else None
                 except Exception as _e1:
-                    logger.debug("[Livermore] %s 1H fetch failed: %s", asset_name, _e1)
+                    logger.debug("[Livermore] %s 1H API fetch failed: %s", asset_name, _e1)
+                df_1h = self._merge_lsm_data(csv_1h, df_1h_api)
+
+                bars_4h = len(df_4h) if df_4h is not None else 0
+                bars_1h = len(df_1h) if df_1h is not None else 0
+                logger.info(
+                    "[Livermore] %s warm-start data: 4H=%d bars, 1H=%d bars",
+                    asset_name, bars_4h, bars_1h,
+                )
 
                 target_agg.warm_start_livermore(df_4h, df_1h)
                 warmed += 1

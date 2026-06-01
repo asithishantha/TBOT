@@ -1858,16 +1858,26 @@ class InstitutionalCouncilAggregator:
                             }
 
                         # B. DYNAMIC WEIGHTING (SOFT ADJUSTMENT)
+                        # Requires the same minimum sample as the circuit breaker (10 trades)
+                        # before adjusting scores. Below that threshold a 100% win rate is
+                        # statistical noise from 1-2 trades — applying a 1.5× multiplier
+                        # defeats the raised thresholds the Governor set for NEUTRAL regimes.
                         # Adjustment: Winrate 50% -> 1.0x, Winrate 80% -> 1.3x, Winrate 20% -> 0.7x
-                        weight_multiplier = 0.5 + winrate
-                        
-                        old_score = total_score
-                        total_score *= weight_multiplier
-                        
-                        if abs(weight_multiplier - 1.0) > 0.05:
-                            logger.info(
-                                f"[DYNAMIC WEIGHT] {trade_type} winrate {winrate:.1%} -> "
-                                f"Multiplier {weight_multiplier:.2f}x | Score: {old_score:.2f} -> {total_score:.2f}"
+                        _DW_MIN_TRADES = 10
+                        if total_trades >= _DW_MIN_TRADES:
+                            weight_multiplier = 0.5 + winrate
+                            old_score = total_score
+                            total_score *= weight_multiplier
+                            if abs(weight_multiplier - 1.0) > 0.05:
+                                logger.info(
+                                    f"[DYNAMIC WEIGHT] {trade_type} winrate {winrate:.1%} "
+                                    f"({total_trades} trades) -> "
+                                    f"Multiplier {weight_multiplier:.2f}x | Score: {old_score:.2f} -> {total_score:.2f}"
+                                )
+                        else:
+                            logger.debug(
+                                f"[DYNAMIC WEIGHT] {trade_type} skipped — only {total_trades}/{_DW_MIN_TRADES} "
+                                f"trades (winrate {winrate:.1%} unreliable at this sample size)"
                             )
                     except Exception as e:
                         logger.warning(f"[DYNAMIC WEIGHT] Failed: {e}")

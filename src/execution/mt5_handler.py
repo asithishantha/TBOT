@@ -754,6 +754,61 @@ class MT5ExecutionHandler:
             # Fetch OHLC for VTM initialization
             ohlc_data, df = self._fetch_ohlc_for_vtm(symbol, asset)
 
+            # ── STRUCTURE TARGET PRE-FLIGHT ───────────────────────────────────
+            # Reject the trade before order placement if use_structure_targets=True
+            # and zero TP tiers can be anchored to a real price level.
+            # A trade with no structural targets has no reason to reach any TP —
+            # targets are pure ATR arithmetic with no market meaning.
+            # This check runs only when OHLC data is available; skipped silently
+            # on data fetch failure so it never blocks due to a connectivity issue.
+            if risk_config.get("use_structure_targets", True) and ohlc_data is not None:
+                try:
+                    from src.execution.veteran_trade_manager import find_resistance_levels
+                    # Re-use atr_fast already computed for the SL; fall back to
+                    # 1% of price if it wasn't available (same fallback as pre-flight).
+                    _atr_val = (
+                        signal_details.get("atr_fast") if signal_details else None
+                    ) or current_price * 0.01
+                    _struct_levels = find_resistance_levels(
+                        ohlc_data["high"], ohlc_data["low"], ohlc_data["close"],
+                        current_price, side,
+                        lookback=risk_config.get("pivot_lookback", 25),
+                        tolerance=0.5 * _atr_val,
+                    )
+                    _risk = abs(current_price - initial_stop)
+                    _r_mults = risk_config.get("partial_targets", [0.8, 1.6, 3.0])
+                    _min_rr  = 2.0
+                    _anchored = 0
+                    for _r in _r_mults:
+                        _tp_candidate = (
+                            current_price + _risk * _r if side == "long"
+                            else current_price - _risk * _r
+                        )
+                        if _struct_levels:
+                            _closest = min(_struct_levels, key=lambda x: abs(x - _tp_candidate))
+                            _srr = (
+                                (_closest - current_price) / _risk if side == "long"
+                                else (current_price - _closest) / _risk
+                            )
+                            _dist_pct = abs(_closest - _tp_candidate) / max(abs(_tp_candidate), 1e-9)
+                            if _srr >= _min_rr and _dist_pct < 0.25:
+                                _anchored += 1
+                    if _anchored == 0:
+                        logger.warning(
+                            f"[STRUCTURE PRE-FLIGHT] ❌ {asset} {side.upper()} rejected — "
+                            f"0/{len(_r_mults)} TP tiers have a structural anchor "
+                            f"({len(_struct_levels)} levels found). "
+                            f"No structural context for targets — trade lacks edge."
+                        )
+                        return False
+                    logger.info(
+                        f"[STRUCTURE PRE-FLIGHT] ✅ {asset}: {_anchored}/{len(_r_mults)} "
+                        f"TP tiers structurally anchored."
+                    )
+                except Exception as _sp_err:
+                    # Non-fatal — never block on a structure check failure
+                    logger.debug(f"[STRUCTURE PRE-FLIGHT] Check skipped ({_sp_err})")
+
             # Margin validation
             small_account_active = signal_details.get("small_account_protocol_active", False) if signal_details else False
             if not self._validate_margin(volume_lots, current_price, symbol_info, small_account_active=small_account_active):
