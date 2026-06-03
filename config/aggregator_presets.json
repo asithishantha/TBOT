@@ -178,9 +178,9 @@
         }
       },
       "aggressive": {
-        "description": "Active GOLD settings. Focus: Trend Catching.",
-        "buy_threshold": 0.28,
-        "sell_threshold": 0.28,
+        "description": "Active GOLD/USTEC/USOIL settings. Focus: Trend Catching. Tightened: adx_required=true for USTEC/USDJPY TF; raised thresholds to reduce low-conviction chop entries.",
+        "buy_threshold": 0.32,
+        "sell_threshold": 0.32,
         "two_strategy_bonus": 0.22,
         "three_strategy_bonus": 0.3,
         "bull_buy_boost": 0.09,
@@ -188,7 +188,7 @@
         "bear_sell_boost": 0.09,
         "bear_buy_penalty": 0.09,
         "min_confidence_to_use": 0.08,
-        "min_signal_quality": 0.22,
+        "min_signal_quality": 0.30,
         "hold_contribution_pct": 0.0,
         "allow_single_override": true,
         "single_override_threshold": 0.7,
@@ -286,9 +286,9 @@
         "ema_weight": 0.4
       },
       "aggressive": {
-        "description": "Active FX settings. Focus: Trend and Range Catching.",
-        "buy_threshold": 0.22,
-        "sell_threshold": 0.2,
+        "description": "Active FX settings. Focus: Trend and Range Catching. Tightened: raised thresholds to reduce weak-ADX chop entries on USDJPY and other FX pairs.",
+        "buy_threshold": 0.27,
+        "sell_threshold": 0.25,
         "two_strategy_bonus": 0.18,
         "three_strategy_bonus": 0.22,
         "bull_buy_boost": 0.07,
@@ -296,7 +296,7 @@
         "bear_sell_boost": 0.07,
         "bear_buy_penalty": 0.06,
         "min_confidence_to_use": 0.04,
-        "min_signal_quality": 0.19,
+        "min_signal_quality": 0.25,
         "hold_contribution_pct": 0.0,
         "allow_single_override": true,
         "single_override_threshold": 0.68,

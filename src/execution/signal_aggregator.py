@@ -842,22 +842,12 @@ Adds Governor + Volatility + Sniper checks to existing aggregator
         # the second parameter of _build_composite_state.
         state._transition_evidence = None
         _regime_name = governor_data.get("consensus_regime", "UNKNOWN") if governor_data else "UNKNOWN"
-        # ✅ M-4 FIX: Also fire transition detector for NEUTRAL+TRANSITION path.
-        # EURJPY / EURUSD are often NEUTRAL regime but reach the TRANSITION
-        # branch via the Governor. Without this flag they never get transition
-        # evidence scoring, wasting the detector entirely for those assets.
-        _is_transition_trade = (
-            governor_data.get("trade_type", "") == "TRANSITION"
-            if governor_data else False
-        )
-        # ✅ TASK-8 FIX: Also run for full BEARISH/BULLISH regimes.
-        # The post-score momentum softener in mtf_regime_detector may have already
-        # downgraded the regime to SLIGHTLY_*, but if it hasn't (e.g. the day-open
-        # regime snapshot is stale), the transition detector can still collect
-        # evidence for the gatekeeper's counter-trend penalty scaling.
-        # Strong evidence (conditions_met >= 3) is consumed by the gatekeeper's
-        # softener as a second confirmation layer for full trend regimes.
-        if _regime_name in ("BEARISH", "SLIGHTLY_BEARISH", "BULLISH", "SLIGHTLY_BULLISH") or _is_transition_trade:
+        # MRS §6 Phase 0: TRANSITION path removed. Transition evidence is now
+        # only collected for directional (BEARISH/BULLISH) regimes where the
+        # gatekeeper softener uses it to modulate counter-trend penalty scaling.
+        # NEUTRAL regime no longer needs evidence — the Livermore Hard Veto
+        # (is_silent_zone) handles structural gating for those assets.
+        if _regime_name in ("BEARISH", "SLIGHTLY_BEARISH", "BULLISH", "SLIGHTLY_BULLISH"):
             try:
                 _depth = governor_data.get("depth_data") if governor_data else None
                 state._transition_evidence = self._transition_detector.collect_evidence(

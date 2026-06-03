@@ -4122,6 +4122,52 @@ class TradingBot:
 
             details["price"] = current_price
 
+            # ── POST-SIGNAL LIVERMORE COUNTER-TREND BLOCK ──────────────────────
+            # Extends Phase 2 Hard Veto Block C to ALL aggregator outputs, not just MR.
+            # In NATURAL_RETRACEMENT price is pulling back inside an uptrend — SHORTs
+            # are counter-trend and historically losing (USOIL June 2026 SHORT $90.28,
+            # USOIL June 2026 LONG $91.60 in wrong conditions both lost).
+            # In NATURAL_REBOUND price is bouncing inside a downtrend — LONGs are
+            # counter-trend. The council's TF judge can still generate these signals
+            # even though MR is correctly blocked — this gate closes that gap.
+            if signal != 0:
+                _cs_post = mtf_regime.get("composite_state")
+                _lsm_post = None
+                if _cs_post is not None:
+                    _lsm_post = getattr(_cs_post, "livermore_state_1h", None)
+                    if hasattr(_lsm_post, "value"):
+                        _lsm_post = _lsm_post.value
+                if _lsm_post == "NATURAL_RETRACEMENT" and signal < 0:
+                    logger.info(
+                        f"[LIVERMORE BLOCK] {asset_name}: SHORT zeroed — "
+                        f"NATURAL_RETRACEMENT is a pullback in uptrend, not a SHORT setup"
+                    )
+                    signal = 0
+                    details["reasoning"] = "livermore_counter_trend_block"
+                elif _lsm_post == "NATURAL_REBOUND" and signal > 0:
+                    logger.info(
+                        f"[LIVERMORE BLOCK] {asset_name}: LONG zeroed — "
+                        f"NATURAL_REBOUND is a bounce in downtrend, not a LONG setup"
+                    )
+                    signal = 0
+                    details["reasoning"] = "livermore_counter_trend_block"
+
+            # ── MINIMUM REGIME CONFIDENCE GATE ────────────────────────────────
+            # Block any signal when MTF regime confidence is below 60%.
+            # NEUTRAL (0%), SLIGHTLY_BEARISH at 33-50% — all historically losing.
+            # BTC BEARISH 100%, USTEC BULLISH 100% pass easily.
+            # Configurable via config["trading"]["min_regime_confidence"] (default 0.60).
+            if signal != 0:
+                _min_conf = self.config.get("trading", {}).get("min_regime_confidence", 0.60)
+                _regime_conf = mtf_regime.get("confidence", 0.0)
+                if _regime_conf < _min_conf:
+                    logger.info(
+                        f"[CONFIDENCE GATE] {asset_name}: Signal blocked — "
+                        f"regime confidence {_regime_conf:.0%} < {_min_conf:.0%} minimum"
+                    )
+                    signal = 0
+                    details["reasoning"] = "low_regime_confidence"
+
             # Log Signal Quality
             logger.info(
                 f"[SIGNAL] {asset_name} Signal: {signal} "

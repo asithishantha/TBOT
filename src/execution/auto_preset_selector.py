@@ -693,8 +693,11 @@ class DynamicPresetSelector:
                     end_date=end_time.strftime('%Y-%m-%d %H:%M:%S'),
                 )
             else:
+                # Use mt5_symbol if available (e.g. BTCUSDm for BTC on Exness),
+                # fallback to generic symbol field.
+                _mt5_sym = asset_cfg.get('mt5_symbol') or asset_cfg.get('symbol')
                 df = self.data_manager.fetch_mt5_data(
-                    symbol=asset_cfg.get('symbol'),
+                    symbol=_mt5_sym,
                     timeframe='H4',
                     start_date=start_time.strftime('%Y-%m-%d'),
                     end_date=end_time.strftime('%Y-%m-%d %H:%M:%S'),

@@ -326,13 +326,16 @@ class InstitutionalCouncilAggregator:
             is_bullish = getattr(governor, 'is_bullish', governor_data.get('is_bullish', False))
             is_bearish = getattr(governor, 'is_bearish', governor_data.get('is_bearish', False))
 
-            # 2. T2.1: NEUTRAL → TRANSITION (allow at raised score threshold, not full block)
-            # Previously hard-blocked all TREND signals in NEUTRAL regime, which
-            # killed every signal during consolidation periods. Now passes through
-            # with trade_type="TRANSITION" so the caller can raise required_score.
+            # 2. MRS §6 Phase 0 — TRANSITION path permanently removed.
+            # NEUTRAL regime passes through at normal scoring. Structural gating
+            # is handled by the Livermore Hard Veto (is_silent_zone) which blocks
+            # entries in NATURAL_RETRACEMENT / NATURAL_REBOUND states — the only
+            # states where NEUTRAL regime entries were genuinely dangerous.
+            # Raising required_score +0.75 for MTF NEUTRAL was the single largest
+            # source of rejected valid setups in the pre-v3 system.
             if regime_name == "NEUTRAL" and preset_trade_type == "TREND":
-                logger.info(f"[GOV] ⚠️ TRANSITION - Neutral/Mixed market. Allowing at higher score threshold.")
-                return True, "TRANSITION"
+                logger.debug(f"[GOV] NEUTRAL regime — passing at standard score threshold.")
+                return True, "TREND"
 
             # 3. ASSET-DNA Gating & Trade Alignment
             asset = self.asset_type.upper()
@@ -1458,11 +1461,8 @@ class InstitutionalCouncilAggregator:
                             'ema_signal': ema_signal,
                             'ema_confidence': ema_conf,
                         }
-                    # T2.1: TRANSITION — NEUTRAL regime passed, raise required_score
-                    if trade_type == "TRANSITION":
-                        trade_type = "TREND"  # Restore for downstream R/R gates
-                        required_score = min(required_score + 0.75, 4.5)
-                        logger.info(f"[GOV] 🔄 TRANSITION: Neutral market — required score raised to {required_score:.2f}")
+                    # MRS §6: TRANSITION path removed — no score raise for NEUTRAL regime.
+                    # trade_type arrives as "TREND" for NEUTRAL regime (see governor check above).
 
                     # SLIGHTLY_COUNTER — ambiguous regime counter-trend, raise required_score.
                     # TransitionDetector can soften the +0.50 raise if ≥2 of 4 sources
@@ -1750,20 +1750,14 @@ class InstitutionalCouncilAggregator:
             if signal != 0:
                 penalty = 0.0
                 
-                # A. SNIPER LOCK
-                # Regime-aligned signals (sell in bear, buy in bull) get a reduced penalty
-                # because the macro filter has already confirmed direction — we're only
-                # missing a dramatic entry candle, not conviction. Counter-trend signals
-                # that also fail sniper get the full -1.0 as they need both macro AND
-                # micro confirmation to justify trading against the trend.
+                # A. SNIPER LOCK — MRS §6 Phase 0: gate removed.
+                # CNN-LSTM sniper disconnected. Displacement check retained as
+                # informational log only — no score penalty applied.
                 sniper_passed, sniper_details = self._check_sniper_filter(df, signal)
                 if not sniper_passed:
-                    regime_aligned = (signal == 1 and is_bull) or (signal == -1 and not is_bull)
-                    sniper_penalty = 0.5 if regime_aligned else 1.0
-                    penalty += sniper_penalty
-                    logger.info(
-                        f"[PENALTY] ⚠️ Sniper confirmation failure: -{sniper_penalty:.1f} "
-                        f"({'regime-aligned' if regime_aligned else 'counter-trend'})"
+                    logger.debug(
+                        f"[DISPLACEMENT] Low momentum candle — informational only, no penalty "
+                        f"(MRS Phase 0 sniper gate removed)"
                     )
 
                 # B. PROFIT ECONOMICS
@@ -2259,6 +2253,12 @@ class InstitutionalCouncilAggregator:
                     else:
                         sell_exp   = "STRUCT SELL: ❌ No resistance nearby"
 
+            # Cap at 1.0 — the scorecard declares STRUCTURE max as 1.0/1.0.
+            # When w_structure=1.5 (SLIGHTLY_BEARISH dynamic weight) the raw scores
+            # overflow to 1.5 which inflates the total past what the UI shows and
+            # allows trades to clear thresholds they shouldn't. Hard cap here.
+            buy_score  = min(buy_score,  1.0)
+            sell_score = min(sell_score, 1.0)
             return buy_score, sell_score, {'buy': buy_exp, 'sell': sell_exp}
 
         except Exception as e:

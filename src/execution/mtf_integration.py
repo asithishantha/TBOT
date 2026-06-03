@@ -323,14 +323,10 @@ class MTFRegimeIntegration:
                 # council_aggregator uses governor_data.get("consensus_regime", "NEUTRAL")
                 # Previously only "regime" existed, causing both to always read the default.
                 "consensus_regime": regime_status.consensus_regime,
-                # ✅ FIX: Expose trade_type so _is_transition_trade in _build_composite_state
-                # can fire for NEUTRAL+FX assets (EURUSD/EURJPY in consolidation).
-                # "TRANSITION" matches the string returned by _check_governor_filter()
-                # for NEUTRAL regimes, enabling TransitionDetector on those assets.
-                "trade_type": (
-                    "TRANSITION" if regime_status.consensus_regime == "NEUTRAL"
-                    else regime_status.trade_type.value
-                ),
+                # MRS §6 Phase 0: TRANSITION path removed.
+                # NEUTRAL regime passes as "TREND" — Livermore Hard Veto handles
+                # structural blocking. No score raise for MTF NEUTRAL.
+                "trade_type": regime_status.trade_type.value,
                 "regime_score": regime_status.score,
                 "is_bullish": regime_status.is_bullish,
                 "is_bearish": regime_status.is_bearish,
