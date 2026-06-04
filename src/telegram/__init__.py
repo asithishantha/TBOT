@@ -1599,41 +1599,51 @@ class TradingTelegramBot:
             return
 
         pm = self.trading_bot.portfolio_manager
+        bot = self.trading_bot
 
-        # Diagnose current breaker state before overriding
+        # Diagnose current states before overriding
         halted, reason = pm.check_circuit_breaker()
+        profit_locked = getattr(bot, "_profit_lock_override", False) is False and (
+            getattr(pm, "realized_pnl_today", 0) / max(getattr(pm, "session_start_equity", 1), 1)
+            >= bot.config.get("risk", {}).get("daily_profit_lock", {}).get("hard_lock_pct", 0.20)
+        )
 
-        # Set override flag
+        # Override circuit breaker
         pm._circuit_breaker_override = True
 
+        # Override profit lock (hard + soft)
+        bot._profit_lock_override = True
+        bot._profit_soft_lock_active = False
+
         # Also make sure the bot loop is actually running
-        was_stopped = not self.trading_bot.is_running
+        was_stopped = not bot.is_running
         if was_stopped:
-            self.trading_bot.is_running = True
+            bot.is_running = True
 
-        lines = [
-            "🟡 <b>Circuit Breaker Overridden</b>",
-            "",
-        ]
+        lines = ["🟢 <b>Trading Resumed</b>", ""]
+
         if halted:
-            lines.append(f"Was halted because: <i>{reason}</i>")
-        else:
-            lines.append("ℹ️ Circuit breaker was not currently active — override set anyway.")
+            lines.append(f"🔓 Circuit breaker cleared (was: <i>{reason}</i>)")
+        if profit_locked:
+            lines.append("🔓 Profit lock cleared (hard + soft)")
+
+        if not halted and not profit_locked:
+            lines.append("ℹ️ No active blocks — override set as precaution.")
 
         if was_stopped:
-            lines.append("▶️ Bot loop was stopped — restarted.")
+            lines.append("▶️ Bot loop restarted.")
 
         lines += [
             "",
             "⚠️ <b>New positions may now be opened.</b>",
-            "Override clears automatically at the next session start (midnight).",
-            "Use /stop_trading to re-engage the halt manually.",
+            "All overrides clear automatically at midnight (next session reset).",
+            "Use /stop_trading to halt manually.",
         ]
 
         user = update.effective_user
         logger.warning(
-            f"[TG] /resume: circuit-breaker override set by "
-            f"{user.username or user.id}. Prior reason: {reason or 'none'}"
+            f"[TG] /resume: all locks overridden by "
+            f"{user.username or user.id}. CB reason: {reason or 'none'}"
         )
         await update.message.reply_text("\n".join(lines), parse_mode="HTML")
 

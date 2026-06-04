@@ -2853,12 +2853,15 @@ class TradingBot:
                 logger.info("[HEARTBEAT] System running...")
                 self.health_monitor.heartbeat()
 
-            # Phase 2: System Validator — update liveness/calibration this cycle
+            # Phase 2: System Validator — watchdog tick (SYSTEM_INTEGRITY checks).
+            # Per-asset LIVENESS/CALIBRATION updates happen inside trade_asset()
+            # where composite_state is available. This cycle-level call handles
+            # the 5-minute watchdog checks (Amnesia Monitor, VTM CB, API limits).
             if hasattr(self, 'system_validator') and self.system_validator:
                 try:
-                    self.system_validator.update(asset="CYCLE")
+                    self.system_validator.update(asset="CYCLE_WATCHDOG")
                 except Exception as _sv_err:
-                    logger.debug("[VALIDATOR] cycle update error: %s", _sv_err)
+                    logger.debug("[VALIDATOR] cycle watchdog error: %s", _sv_err)
                 if not self.health_monitor.is_healthy():
                     logger.critical("[HEALTH] ⚠️ System is UNHEALTHY! Triggering emergency shutdown.")
                     
@@ -3616,6 +3619,9 @@ class TradingBot:
             self.trade_count_today = 0
             self.daily_loss = 0.0
             self.last_trade_date = current_date
+            # Clear manual overrides set by /resume — new session = fresh slate
+            self._profit_lock_override = False
+            self._profit_soft_lock_active = False
             logger.info(f"[RESET] Daily counters reset for {current_date}")
             self.portfolio_manager.start_trading_session()
             logger.info(f"[SESSION] Trading session started")
@@ -3717,15 +3723,22 @@ class TradingBot:
             _daily_profit_pct = 0.0
 
         if _hard_pct > 0 and _daily_profit_pct >= _hard_pct:
-            self._last_limit_reason = (
-                f"Daily profit hard-lock: realized {_daily_profit_pct:.2%} ≥ {_hard_pct:.2%} target. "
-                f"No new entries until next session."
-            )
-            logger.warning(
-                f"[PROFIT LOCK] Hard lock active — realized {_daily_profit_pct:.2%} ≥ {_hard_pct:.2%}. "
-                f"Blocking new entries."
-            )
-            return False
+            # Allow /resume Telegram command to override the hard lock manually
+            if getattr(self, "_profit_lock_override", False):
+                logger.info(
+                    f"[PROFIT LOCK] Hard lock bypassed by manual override "
+                    f"(realized {_daily_profit_pct:.2%})"
+                )
+            else:
+                self._last_limit_reason = (
+                    f"Daily profit hard-lock: realized {_daily_profit_pct:.2%} ≥ {_hard_pct:.2%} target. "
+                    f"No new entries until next session."
+                )
+                logger.warning(
+                    f"[PROFIT LOCK] Hard lock active — realized {_daily_profit_pct:.2%} ≥ {_hard_pct:.2%}. "
+                    f"Blocking new entries."
+                )
+                return False
 
         if _soft_pct > 0 and _daily_profit_pct >= _soft_pct:
             # Flag used downstream in execute_signal() to halve the position size
@@ -4121,6 +4134,26 @@ class TradingBot:
                 )
 
             details["price"] = current_price
+
+            # ── SYSTEM VALIDATOR — per-asset update ────────────────────────────
+            # Pass the composite_state and signal_details so the validator can
+            # compute LIVENESS (entropy of component outputs) and CALIBRATION
+            # (output distribution) for each active component. Called after
+            # signal generation so all composite_state fields are populated.
+            if hasattr(self, "system_validator") and self.system_validator:
+                try:
+                    _cs_for_validator = mtf_regime.get("composite_state")
+                    self.system_validator.update(
+                        composite_state=_cs_for_validator,
+                        signal_details=details,
+                        asset=asset_name,
+                    )
+                except Exception as _sv_asset_err:
+                    logger.debug(
+                        "[VALIDATOR] per-asset update error for %s: %s",
+                        asset_name, _sv_asset_err,
+                    )
+            # ──────────────────────────────────────────────────────────────────
 
             # ── POST-SIGNAL LIVERMORE COUNTER-TREND BLOCK ──────────────────────
             # Extends Phase 2 Hard Veto Block C to ALL aggregator outputs, not just MR.
