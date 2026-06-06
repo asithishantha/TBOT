@@ -2743,6 +2743,31 @@ class PortfolioManager:
         trade_type = getattr(position, 'trade_type', 'TREND')
         self.performance_tracker.record_trade(trade_type, partial_pnl)
 
+        # ── EDGE z-score tracking ────────────────────────────────────────────
+        try:
+            if hasattr(self, "_trade_close_callback") and self._trade_close_callback:
+                _initial_risk = getattr(position, "initial_risk_usd", None)
+                if _initial_risk and _initial_risk > 0:
+                    _pnl_r = pnl / _initial_risk
+                else:
+                    _sl = getattr(position, "initial_stop_loss", None)
+                    if _sl and position.entry_price and position.quantity:
+                        _sl_dist = abs(position.entry_price - _sl)
+                        _risk_est = _sl_dist * position.quantity
+                        _pnl_r = pnl / _risk_est if _risk_est > 0 else None
+                    else:
+                        _pnl_r = None
+                if _pnl_r is not None:
+                    _side_int = 1 if getattr(position, "side", "long") == "long" else -1
+                    self._trade_close_callback(
+                        component="LIVERMORE_SIGNAL",
+                        signal=_side_int,
+                        entry_time=position.entry_time,
+                        pnl_r=_pnl_r,
+                    )
+        except Exception as _sv_cb_err:
+            logger.debug("[VALIDATOR] EDGE callback error (non-blocking): %s", _sv_cb_err)
+
         # ── DB log ──────────────────────────────────────────���────────────────
         if self.db_manager and hasattr(position, "db_trade_id") and position.db_trade_id:
             try:

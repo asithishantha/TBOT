@@ -448,45 +448,51 @@ class VeteranTradeManager:
         #             RANGE_BOUNDARY / REJECT / None (no classification)
         self.vtm_entry_type             = _cs.get("entry_type")
 
-        # Livermore-aware ATR multiplier overlay
-        _lv4h = self.livermore_state_4h
+        # Livermore-aware ATR multiplier overlay — all values from config
+        _lv4h   = self.livermore_state_4h
+        _lv_adj = self.risk_config.get("livermore_atr_adjustments", {})
+        _main_stop_add    = _lv_adj.get("main_stop_add",         0.3)
+        _sec_stop_sub     = _lv_adj.get("secondary_stop_sub",    0.2)
+        _main_trail_mult  = _lv_adj.get("main_trail_mult",       1.3)
+        _sec_trail_mult   = _lv_adj.get("secondary_trail_mult",  0.7)
+        _be_young         = _lv_adj.get("breakeven_atr_young_state", 1.8)
+        _be_mid           = _lv_adj.get("breakeven_atr_mid_state",   1.5)
+        _be_old           = _lv_adj.get("breakeven_atr_old_state",   1.2)
+        _young_max_age    = _lv_adj.get("young_state_max_age",   5)
+        _old_min_age      = _lv_adj.get("old_state_min_age",    20)
+
         if _lv4h in ("MAIN_UP", "MAIN_DOWN"):
-            # Strong impulse — widen stop to survive mid-move volatility
-            self.atr_multiplier += 0.3
+            self.atr_multiplier += _main_stop_add
             logger.info(
-                f"[VTM] Livermore={_lv4h}: ATR mult +0.3 → {self.atr_multiplier:.2f}×"
+                f"[VTM] Livermore={_lv4h}: ATR mult +{_main_stop_add} → {self.atr_multiplier:.2f}×"
             )
         elif _lv4h in ("SECONDARY_RETRACEMENT", "SECONDARY_REBOUND"):
-            # Uncertain state — tighter stop, quicker protection
-            self.atr_multiplier = max(1.5, self.atr_multiplier - 0.2)
+            self.atr_multiplier = max(1.5, self.atr_multiplier - _sec_stop_sub)
             logger.info(
-                f"[VTM] Livermore={_lv4h}: ATR mult −0.2 → {self.atr_multiplier:.2f}×"
+                f"[VTM] Livermore={_lv4h}: ATR mult −{_sec_stop_sub} → {self.atr_multiplier:.2f}×"
             )
 
-        # Livermore-aware runner trailing multiplier
         if _lv4h in ("MAIN_UP", "MAIN_DOWN"):
-            self.runner_trail_atr_multiplier *= 1.3
+            self.runner_trail_atr_multiplier *= _main_trail_mult
             logger.info(
-                f"[VTM] Livermore={_lv4h}: trail mult ×1.3 → "
+                f"[VTM] Livermore={_lv4h}: trail mult ×{_main_trail_mult} → "
                 f"{self.runner_trail_atr_multiplier:.2f}×"
             )
         elif _lv4h in ("SECONDARY_RETRACEMENT", "SECONDARY_REBOUND"):
-            self.runner_trail_atr_multiplier *= 0.7
+            self.runner_trail_atr_multiplier *= _sec_trail_mult
             logger.info(
-                f"[VTM] Livermore={_lv4h}: trail mult ×0.7 → "
+                f"[VTM] Livermore={_lv4h}: trail mult ×{_sec_trail_mult} → "
                 f"{self.runner_trail_atr_multiplier:.2f}×"
             )
 
-        # Livermore-aware break-even ATR trigger
-        # Young state (age < 5 bars): fresh breakout — give room before locking B/E
-        # Aging state (age > 20 bars): protect profits, state may be ending
+        # Livermore-aware break-even ATR trigger — values from config
         _age4h = self.livermore_state_age_4h
-        if _age4h < 5:
-            self.breakeven_atr_trigger = 1.8
-        elif _age4h > 20:
-            self.breakeven_atr_trigger = 1.2
+        if _age4h < _young_max_age:
+            self.breakeven_atr_trigger = _be_young
+        elif _age4h > _old_min_age:
+            self.breakeven_atr_trigger = _be_old
         else:
-            self.breakeven_atr_trigger = 1.5   # matches pre-Phase-4 hardcoded default
+            self.breakeven_atr_trigger = _be_mid
         # ─────────────────────────────────────────────────────────────────────
 
         # Early Scale: lock in a small partial exit within the first N bars

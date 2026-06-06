@@ -351,6 +351,11 @@ class TradingBot:
         self.system_validator = SystemValidator(
             state_path="data/system_validator_state.json",
         )
+        # Wire EDGE z-score tracking: every closed position notifies the validator
+        if self.portfolio_manager and self.system_validator:
+            self.portfolio_manager._trade_close_callback = (
+                self.system_validator.record_trade_outcome
+            )
 
         self.error_handler = GlobalErrorHandler(
             telegram_bot=self.telegram_bot,
@@ -3345,6 +3350,30 @@ class TradingBot:
                     else:
                         vtm_result = handler.check_and_update_positions_VTM(asset_name, df_4h=df_4h)
 
+                    # VTM Circuit Breaker: lock open positions to breakeven on shock bar
+                    if (
+                        hasattr(self, "system_validator")
+                        and self.system_validator
+                        and self.system_validator.get_vtm_circuit_breaker_signal(asset_name)
+                    ):
+                        logger.critical(
+                            "[VTM CB] %s: Circuit breaker active — locking positions to breakeven.",
+                            asset_name,
+                        )
+                        _cb_positions = self.portfolio_manager.get_asset_positions(asset_name) \
+                            if hasattr(self.portfolio_manager, "get_asset_positions") else []
+                        for _cb_pos in _cb_positions:
+                            if _cb_pos.trade_manager and not getattr(
+                                _cb_pos.trade_manager, "_cb_breakeven_locked", False
+                            ):
+                                _cb_pos.trade_manager.current_stop_loss = _cb_pos.entry_price
+                                _cb_pos.trade_manager._cb_breakeven_locked = True
+                                logger.warning(
+                                    "[VTM CB] %s pos %s: stop locked to breakeven @ %.5g",
+                                    asset_name, _cb_pos.position_id, _cb_pos.entry_price,
+                                )
+                        self.system_validator.clear_vtm_cb_signal(asset_name)
+
                     # ✅ Handle Pyramid Requests (gated by config flag)
                     _pyramiding_on = self.config.get("trading", {}).get("vtm_pyramiding_enabled", True)
                     if _pyramiding_on and isinstance(vtm_result, dict) and "pyramid_requests" in vtm_result:
@@ -4143,9 +4172,17 @@ class TradingBot:
             if hasattr(self, "system_validator") and self.system_validator:
                 try:
                     _cs_for_validator = mtf_regime.get("composite_state")
+                    _df_1h_for_validator = (
+                        getattr(self, "_df_1h_cache", {}).get(asset_name)
+                    )
+                    _positions_for_validator = list(
+                        self.portfolio_manager.positions.values()
+                    ) if self.portfolio_manager else []
                     self.system_validator.update(
                         composite_state=_cs_for_validator,
                         signal_details=details,
+                        open_positions=_positions_for_validator,
+                        df_1h=_df_1h_for_validator,
                         asset=asset_name,
                     )
                 except Exception as _sv_asset_err:

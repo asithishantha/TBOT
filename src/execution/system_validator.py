@@ -208,6 +208,7 @@ class SystemValidator:
         open_positions: List[Dict] = None,
         df_1h=None,
         asset: str = "UNKNOWN",
+        livermore_state: str = None,
         binance_api_weight: Optional[int] = None,
         binance_api_weight_limit: int = 6000,
     ) -> Dict[str, bool]:
@@ -254,7 +255,10 @@ class SystemValidator:
         # ── Watchdog 2: VTM Circuit Breaker Signal ────────────────────────────
         try:
             if open_positions and df_1h is not None and len(df_1h) >= 2:
-                fired = self._check_vtm_circuit_breaker(open_positions, df_1h, asset)
+                fired = self._check_vtm_circuit_breaker(
+                    open_positions, df_1h, asset,
+                    livermore_state=livermore_state,
+                )
                 results["vtm_cb_fired"] = fired
         except Exception as e:
             logger.debug("[VALIDATOR] VTM CB watchdog error: %s", e)
@@ -505,6 +509,7 @@ class SystemValidator:
         open_positions: List[Dict],
         df_1h,
         asset: str,
+        livermore_state: str = None,
     ) -> bool:
         """
         MRS §11: If a single 1H bar moves more than 3×ATR(14) against the
@@ -554,7 +559,17 @@ class SystemValidator:
                 if not against:
                     continue
 
-                if _atr_mult >= self._vtm_cb_atr_mult:
+                # Only fire in NATURAL/SECONDARY states — a 3×ATR bar in a
+                # confirmed MAIN trend may just be the trend running hard.
+                _natural_states = {
+                    "NATURAL_RETRACEMENT", "NATURAL_REBOUND",
+                    "SECONDARY_RETRACEMENT", "SECONDARY_REBOUND",
+                }
+                _lsm_gate = (
+                    livermore_state is None  # unknown → fire conservatively
+                    or livermore_state in _natural_states
+                )
+                if _atr_mult >= self._vtm_cb_atr_mult and _lsm_gate:
                     logger.critical(
                         "[VALIDATOR] [CRITICAL] Circuit Breaker fired — %s "
                         "%.1f×ATR single bar (%.1f×ATR threshold) — locking to breakeven.",

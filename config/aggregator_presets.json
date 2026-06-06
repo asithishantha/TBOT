@@ -413,7 +413,50 @@
     "modifier_cap": 1.5,
     "vtm_circuit_breaker_atr_mult": 3.0,
     "vol_down_ratio_veto_threshold": 1.2,
-    "_note": "All numeric thresholds live here per MRS zero-magic-numbers rule."
+    "_note": "All numeric thresholds live here per MRS zero-magic-numbers rule.",
+    "lifecycle_age_thresholds": {
+      "_comment": "Bars of 4H state age before MAIN states graduate PICKUP\u2192CONFIRMATION\u2192ESTABLISHED. Calibrate per asset based on typical trend duration.",
+      "BTC": {
+        "pickup_max": 5,
+        "confirmation_max": 15
+      },
+      "GOLD": {
+        "pickup_max": 4,
+        "confirmation_max": 12
+      },
+      "EURUSD": {
+        "pickup_max": 3,
+        "confirmation_max": 10
+      },
+      "EURJPY": {
+        "pickup_max": 3,
+        "confirmation_max": 10
+      },
+      "USTEC": {
+        "pickup_max": 5,
+        "confirmation_max": 14
+      },
+      "GBPAUD": {
+        "pickup_max": 3,
+        "confirmation_max": 10
+      },
+      "GBPUSD": {
+        "pickup_max": 3,
+        "confirmation_max": 10
+      },
+      "USOIL": {
+        "pickup_max": 4,
+        "confirmation_max": 12
+      },
+      "USDJPY": {
+        "pickup_max": 3,
+        "confirmation_max": 10
+      },
+      "default": {
+        "pickup_max": 4,
+        "confirmation_max": 12
+      }
+    }
   },
   "MR_THREE_MODE": {
     "_comment": "Phase 3A: MR Three-Mode Rebuild thresholds. Zero magic numbers \u2014 all constants here. Mode 1 = Pullback Completion (NATURAL_RETRACEMENT, spring mandatory). Mode 2 = Counter-Trend (SECONDARY states, ADX<25, 4/4 optional). Mode 3 = Climax Fade (MAIN states, stretched leg + reversal candle).",

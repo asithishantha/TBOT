@@ -44,7 +44,7 @@ class BinanceFuturesHandler:
 
         # Hedging Configuration
         self.allow_hedging = self.config.get("trading", {}).get(
-            "allow_simultaneous_long_short", True
+            "allow_simultaneous_long_short", False  # Fail closed: hedging OFF if key missing
         )
 
         # Verify Futures API access and load filters

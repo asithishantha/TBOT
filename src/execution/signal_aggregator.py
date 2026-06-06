@@ -1093,9 +1093,28 @@ Adds Governor + Volatility + Sniper checks to existing aggregator
         _lsm_age   = getattr(state, 'livermore_state_age_4h', 0)
         if _lsm_state is not None:
             if _lsm_state in ("MAIN_UP", "MAIN_DOWN"):
-                if _lsm_age <= 5:
+                # Load per-asset age thresholds from config — avoids hardcoded 5/15.
+                try:
+                    if not hasattr(self, "_lifecycle_age_cfg"):
+                        import json as _json_lac
+                        with open("config/aggregator_presets.json") as _lac_f:
+                            _lac_data = _json_lac.load(_lac_f)
+                        self._lifecycle_age_cfg = (
+                            _lac_data
+                            .get("REQUIRED_SCORE_MODIFIER", {})
+                            .get("lifecycle_age_thresholds", {})
+                        )
+                    _asset_lac = self._lifecycle_age_cfg.get(
+                        self.asset_type,
+                        self._lifecycle_age_cfg.get("default", {"pickup_max": 4, "confirmation_max": 12})
+                    )
+                    _pickup_max  = _asset_lac.get("pickup_max", 4)
+                    _confirm_max = _asset_lac.get("confirmation_max", 12)
+                except Exception:
+                    _pickup_max, _confirm_max = 4, 12  # safe fallback
+                if _lsm_age <= _pickup_max:
                     state.lifecycle_phase = "PICKUP"
-                elif _lsm_age <= 15:
+                elif _lsm_age <= _confirm_max:
                     state.lifecycle_phase = "CONFIRMATION"
                 else:
                     state.lifecycle_phase = "ESTABLISHED"
