@@ -3339,16 +3339,19 @@ class TradingBot:
                 if not handler:
                     continue
 
-                # Get 4H data from the cache
+                # Get 4H data and current composite_state from cache
                 df_4h = self._df_4h_cache.get(asset_name)
+                _vtm_cs = None
+                if hasattr(self, "_current_regime_data"):
+                    _vtm_cs = self._current_regime_data.get(asset_name, {}).get("composite_state")
 
-                # Check VTM with real-time updates
+                # Check VTM with real-time updates — pass composite_state for live Livermore awareness
                 try:
                     vtm_result = None
                     if exchange == "binance":
-                        vtm_result = handler.check_and_update_positions_VTM(asset_name, df_4h=df_4h)
+                        vtm_result = handler.check_and_update_positions_VTM(asset_name, df_4h=df_4h, composite_state=_vtm_cs)
                     else:
-                        vtm_result = handler.check_and_update_positions_VTM(asset_name, df_4h=df_4h)
+                        vtm_result = handler.check_and_update_positions_VTM(asset_name, df_4h=df_4h, composite_state=_vtm_cs)
 
                     # VTM Circuit Breaker: lock open positions to breakeven on shock bar
                     if (

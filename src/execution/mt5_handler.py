@@ -1926,7 +1926,7 @@ class MT5ExecutionHandler:
         """Actively check and update all positions using VTM"""
         return self.check_and_update_positions_VTM(asset_name, df_4h=df_4h)
 
-    def check_and_update_positions_VTM(self, asset_name: str, df_4h: Optional[pd.DataFrame] = None):
+    def check_and_update_positions_VTM(self, asset_name: str, df_4h: Optional[pd.DataFrame] = None, composite_state=None):
         """High-frequency VTM update loop for MT5 positions."""
         try:
             positions = self.portfolio_manager.get_asset_positions(asset_name)
@@ -1974,7 +1974,7 @@ class MT5ExecutionHandler:
                     _tp_before = position.trade_manager.current_take_profit
                     
                     exit_signal = position.trade_manager.update_with_current_price(
-                        current_price, df_4h=df_4h
+                        current_price, df_4h=df_4h, composite_state=composite_state
                     )
                     
                     _sl_after = position.trade_manager.current_stop_loss

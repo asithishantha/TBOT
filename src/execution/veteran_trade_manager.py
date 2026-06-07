@@ -893,17 +893,41 @@ class VeteranTradeManager:
             logger.error(f"[VTM] Update error: {e}")
             return None
 
-    def update_with_current_price(self, current_price: float, df_4h: Optional[pd.DataFrame] = None) -> Optional[Dict]:
+    def update_with_current_price(
+        self,
+        current_price: float,
+        df_4h: Optional[pd.DataFrame] = None,
+        composite_state=None,
+    ) -> Optional[Dict]:
         try:
-            atr = self._calculate_atr() # Calculate ATR here
-            
+            atr = self._calculate_atr()
+
+            # ── PHASE 4: Live Livermore State Refresh ──────────────────────────
+            # Refresh 4H Livermore state every cycle so VTM responds to structural
+            # transitions that occur AFTER trade entry, not just at entry time.
+            if composite_state is not None:
+                _new_lv4h = getattr(composite_state, "livermore_state_4h", None)
+                _new_age   = int(getattr(composite_state, "livermore_state_age_4h", 0) or 0)
+                if _new_lv4h and _new_lv4h != self.livermore_state_4h:
+                    _prev = self.livermore_state_4h
+                    self.livermore_state_4h     = _new_lv4h
+                    self.livermore_state_age_4h = _new_age
+                    logger.info(
+                        "[VTM LIVE LSM] %s: 4H state %s → %s (age=%d bars)",
+                        self.asset, _prev, _new_lv4h, _new_age,
+                    )
+                    self._apply_livermore_transition(
+                        prev_state=_prev,
+                        new_state=_new_lv4h,
+                        current_price=current_price,
+                        atr=atr,
+                    )
+
             if self.side == "long":
                 old_high = self.highest_price_reached
                 self.highest_price_reached = max(self.highest_price_reached, current_price)
                 if self.runner_activated and self.highest_price_reached > old_high and self.trade_type == "TREND":
-                    # ✅ PHASE 5: ATR-BASED RUNNER TRAIL (multiplier from runner_trail_atr_multiplier config)
                     new_trail = self.highest_price_reached - (self.runner_trail_atr_multiplier * atr)
-
                     if new_trail > self.current_stop_loss:
                         logger.info(f"[VTM] 🏃 Trailing SL updated to ${new_trail:,.2f} (from ${self.current_stop_loss:,.2f}).")
                         self.current_stop_loss = new_trail
@@ -911,17 +935,136 @@ class VeteranTradeManager:
                 old_low = self.lowest_price_reached
                 self.lowest_price_reached = min(self.lowest_price_reached, current_price)
                 if self.runner_activated and self.lowest_price_reached < old_low and self.trade_type == "TREND":
-                    # ✅ PHASE 5: ATR-BASED RUNNER TRAIL - SHORT (multiplier from runner_trail_atr_multiplier config)
                     new_trail = self.lowest_price_reached + (self.runner_trail_atr_multiplier * atr)
-                    
-                    if new_trail < self.current_stop_loss: 
+                    if new_trail < self.current_stop_loss:
                         logger.info(f"[VTM] 🏃 Trailing SL updated to ${new_trail:,.2f} (from ${self.current_stop_loss:,.2f}).")
                         self.current_stop_loss = new_trail
-            
-            return self.check_exit(current_price, atr, df_4h=df_4h) # Pass ATR and df_4h to check_exit
+
+            return self.check_exit(current_price, atr, df_4h=df_4h)
         except Exception as e:
             logger.error(f"[VTM] Price update error: {e}")
             return None
+
+    def _apply_livermore_transition(
+        self,
+        prev_state: str,
+        new_state: str,
+        current_price: float,
+        atr: float,
+    ) -> None:
+        """
+        Respond to a live 4H Livermore state transition during an open trade.
+
+        Rules (MRS Phase 4):
+        - MAIN → NATURAL: price starting a counter-move. Tighten trail to protect
+          profits. Do NOT exit — natural moves are expected within trends.
+        - MAIN → SECONDARY: deeper counter-move, structural warning. Move SL to
+          breakeven if profitable; tighten trail aggressively.
+        - NATURAL/SECONDARY → MAIN (same direction): trend resumed. Restore trail
+          multiplier so runner can breathe again.
+        - Any → MAIN (opposite direction): trend has reversed. Tighten to near
+          breakeven — the original thesis is now invalidated.
+        """
+        if atr <= 0:
+            return
+
+        _lv_adj        = self.risk_config.get("livermore_atr_adjustments", {})
+        _main_trail    = _lv_adj.get("main_trail_mult",      1.3)
+        _sec_trail     = _lv_adj.get("secondary_trail_mult", 0.7)
+        _config_trail  = self.risk_config.get("runner_trail_atr_multiplier", 1.0)
+
+        _MAIN    = {"MAIN_UP", "MAIN_DOWN"}
+        _NATURAL = {"NATURAL_RETRACEMENT", "NATURAL_REBOUND"}
+        _SEC     = {"SECONDARY_RETRACEMENT", "SECONDARY_REBOUND"}
+
+        is_long  = self.side == "long"
+        in_profit = (
+            (is_long  and current_price > self.entry_price) or
+            (not is_long and current_price < self.entry_price)
+        )
+
+        # ── MAIN → NATURAL: counter-move starting ────────────────────────
+        if prev_state in _MAIN and new_state in _NATURAL:
+            _same_dir = (
+                (is_long  and new_state == "NATURAL_RETRACEMENT") or
+                (not is_long and new_state == "NATURAL_REBOUND")
+            )
+            if _same_dir:
+                # Normal pullback against position — tighten trail
+                self.runner_trail_atr_multiplier = _config_trail * _sec_trail
+                logger.info(
+                    "[VTM LIVE LSM] %s: MAIN→NATURAL — tightening trail to %.2f× ATR",
+                    self.asset, self.runner_trail_atr_multiplier,
+                )
+
+        # ── MAIN → SECONDARY: deep counter-move, structural warning ──────
+        elif prev_state in _MAIN and new_state in _SEC:
+            self.runner_trail_atr_multiplier = _config_trail * _sec_trail * 0.5
+            if in_profit and not getattr(self, "_lv_breakeven_locked", False):
+                self.current_stop_loss = self.entry_price
+                self._lv_breakeven_locked = True
+                logger.warning(
+                    "[VTM LIVE LSM] %s: MAIN→SECONDARY — SL moved to breakeven $%.2f",
+                    self.asset, self.entry_price,
+                )
+            logger.info(
+                "[VTM LIVE LSM] %s: MAIN→SECONDARY — trail tightened to %.2f× ATR",
+                self.asset, self.runner_trail_atr_multiplier,
+            )
+
+        # ── NATURAL → SECONDARY: counter-move escalating ─────────────────
+        elif prev_state in _NATURAL and new_state in _SEC:
+            self.runner_trail_atr_multiplier = _config_trail * _sec_trail * 0.5
+            if in_profit and not getattr(self, "_lv_breakeven_locked", False):
+                self.current_stop_loss = self.entry_price
+                self._lv_breakeven_locked = True
+                logger.warning(
+                    "[VTM LIVE LSM] %s: NATURAL→SECONDARY — SL moved to breakeven $%.2f",
+                    self.asset, self.entry_price,
+                )
+            logger.info(
+                "[VTM LIVE LSM] %s: NATURAL→SECONDARY — trail tightened to %.2f× ATR",
+                self.asset, self.runner_trail_atr_multiplier,
+            )
+
+        # ── NATURAL/SECONDARY → MAIN: trend resuming or reversing ────────
+        elif prev_state in (_NATURAL | _SEC) and new_state in _MAIN:
+            _same_dir = (
+                (is_long  and new_state == "MAIN_UP") or
+                (not is_long and new_state == "MAIN_DOWN")
+            )
+            if _same_dir:
+                self.runner_trail_atr_multiplier = _config_trail * _main_trail
+                self._lv_breakeven_locked = False
+                logger.info(
+                    "[VTM LIVE LSM] %s: →MAIN_%s (trend resumed) — trail restored to %.2f× ATR",
+                    self.asset, "UP" if is_long else "DOWN",
+                    self.runner_trail_atr_multiplier,
+                )
+            else:
+                # Opposite MAIN — full reversal
+                self.runner_trail_atr_multiplier = _config_trail * _sec_trail * 0.3
+                if not getattr(self, "_lv_breakeven_locked", False):
+                    self.current_stop_loss = self.entry_price
+                    self._lv_breakeven_locked = True
+                logger.warning(
+                    "[VTM LIVE LSM] %s: →MAIN_%s (REVERSAL) — SL at breakeven, trail %.2f× ATR",
+                    self.asset, "UP" if not is_long else "DOWN",
+                    self.runner_trail_atr_multiplier,
+                )
+
+        # ── MAIN → opposite MAIN: direct structural reversal ─────────────
+        elif prev_state in _MAIN and new_state in _MAIN and prev_state != new_state:
+            # e.g. MAIN_DOWN → MAIN_UP while holding SHORT — thesis invalidated
+            self.runner_trail_atr_multiplier = _config_trail * _sec_trail * 0.3
+            if not getattr(self, "_lv_breakeven_locked", False):
+                self.current_stop_loss = self.entry_price
+                self._lv_breakeven_locked = True
+            logger.warning(
+                "[VTM LIVE LSM] %s: %s→%s (DIRECT REVERSAL) — SL at breakeven $%.2f, trail %.2f× ATR",
+                self.asset, prev_state, new_state,
+                self.entry_price, self.runner_trail_atr_multiplier,
+            )
 
     def _calculate_adx(self) -> float:
         try:
