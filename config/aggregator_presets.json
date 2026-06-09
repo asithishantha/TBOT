@@ -390,7 +390,8 @@
       "minor_mult": 1.0,
       "dual_confirm": 2,
       "atr_period": 14,
-      "_calibration": "USOIL 4H Feb-Jun2026: low-confidence calibration (0.53 t/w, main_frac=15%) \u2014 kept major=3.5 from calibration, minor=1.0 for stability; re-run after 6mo data"
+      "_calibration": "USOIL 4H Feb-Jun2026: low-confidence calibration (0.53 t/w, main_frac=15%) \u2014 kept major=3.5 from calibration, minor=1.0 for stability; re-run after 6mo data",
+      "_watch": "Low-confidence calibration \u2014 verify state labels against chart in week 1 of paper trading"
     },
     "USDJPY": {
       "major_mult": 3.5,
@@ -412,7 +413,6 @@
     },
     "modifier_cap": 1.5,
     "vtm_circuit_breaker_atr_mult": 3.0,
-    "vol_down_ratio_veto_threshold": 1.2,
     "_note": "All numeric thresholds live here per MRS zero-magic-numbers rule.",
     "lifecycle_age_thresholds": {
       "_comment": "Bars of 4H state age before MAIN states graduate PICKUP\u2192CONFIRMATION\u2192ESTABLISHED. Calibrate per asset based on typical trend duration.",

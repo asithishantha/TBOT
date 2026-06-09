@@ -128,7 +128,19 @@
         "early_scale_threshold": 0.02,
         "early_scale_bars": 4,
         "early_lock_atr_multiplier": 0.5,
-        "runner_trail_atr_multiplier": 2.0
+        "runner_trail_atr_multiplier": 2.0,
+        "livermore_atr_adjustments": {
+          "_comment": "ATR multiplier overlays applied at trade entry based on Livermore 4H state.",
+          "main_stop_add": 0.3,
+          "secondary_stop_sub": 0.2,
+          "main_trail_mult": 1.3,
+          "secondary_trail_mult": 0.7,
+          "breakeven_atr_young_state": 1.8,
+          "breakeven_atr_mid_state": 1.5,
+          "breakeven_atr_old_state": 1.2,
+          "young_state_max_age": 5,
+          "old_state_min_age": 20
+        }
       }
     },
     "GOLD": {
@@ -195,7 +207,19 @@
         "early_scale_threshold": 0.015,
         "early_scale_bars": 4,
         "early_lock_atr_multiplier": 0.5,
-        "runner_trail_atr_multiplier": 2.0
+        "runner_trail_atr_multiplier": 2.0,
+        "livermore_atr_adjustments": {
+          "_comment": "ATR multiplier overlays applied at trade entry based on Livermore 4H state.",
+          "main_stop_add": 0.3,
+          "secondary_stop_sub": 0.2,
+          "main_trail_mult": 1.3,
+          "secondary_trail_mult": 0.7,
+          "breakeven_atr_young_state": 1.8,
+          "breakeven_atr_mid_state": 1.5,
+          "breakeven_atr_old_state": 1.2,
+          "young_state_max_age": 5,
+          "old_state_min_age": 20
+        }
       }
     },
     "USTEC": {
@@ -260,7 +284,19 @@
         "early_scale_threshold": 0.02,
         "early_scale_bars": 4,
         "early_lock_atr_multiplier": 0.5,
-        "runner_trail_atr_multiplier": 2.0
+        "runner_trail_atr_multiplier": 2.0,
+        "livermore_atr_adjustments": {
+          "_comment": "ATR multiplier overlays applied at trade entry based on Livermore 4H state.",
+          "main_stop_add": 0.3,
+          "secondary_stop_sub": 0.2,
+          "main_trail_mult": 1.3,
+          "secondary_trail_mult": 0.7,
+          "breakeven_atr_young_state": 1.8,
+          "breakeven_atr_mid_state": 1.5,
+          "breakeven_atr_old_state": 1.2,
+          "young_state_max_age": 5,
+          "old_state_min_age": 20
+        }
       }
     },
     "EURJPY": {
@@ -327,7 +363,19 @@
         "early_scale_threshold": 0.012,
         "early_scale_bars": 4,
         "early_lock_atr_multiplier": 0.5,
-        "runner_trail_atr_multiplier": 2.0
+        "runner_trail_atr_multiplier": 2.0,
+        "livermore_atr_adjustments": {
+          "_comment": "ATR multiplier overlays applied at trade entry based on Livermore 4H state.",
+          "main_stop_add": 0.3,
+          "secondary_stop_sub": 0.2,
+          "main_trail_mult": 1.3,
+          "secondary_trail_mult": 0.7,
+          "breakeven_atr_young_state": 1.8,
+          "breakeven_atr_mid_state": 1.5,
+          "breakeven_atr_old_state": 1.2,
+          "young_state_max_age": 5,
+          "old_state_min_age": 20
+        }
       }
     },
     "EURUSD": {
@@ -384,7 +432,19 @@
         "runner_trail_pct": 0.01,
         "time_stop_bars": 48,
         "time_stop_trend": 72,
-        "time_stop_reversion": 48
+        "time_stop_reversion": 48,
+        "livermore_atr_adjustments": {
+          "_comment": "ATR multiplier overlays applied at trade entry based on Livermore 4H state.",
+          "main_stop_add": 0.3,
+          "secondary_stop_sub": 0.2,
+          "main_trail_mult": 1.3,
+          "secondary_trail_mult": 0.7,
+          "breakeven_atr_young_state": 1.8,
+          "breakeven_atr_mid_state": 1.5,
+          "breakeven_atr_old_state": 1.2,
+          "young_state_max_age": 5,
+          "old_state_min_age": 20
+        }
       }
     },
     "USOIL": {
@@ -451,7 +511,19 @@
         "early_scale_threshold": 0.018,
         "early_scale_bars": 4,
         "early_lock_atr_multiplier": 0.5,
-        "runner_trail_atr_multiplier": 2.0
+        "runner_trail_atr_multiplier": 2.0,
+        "livermore_atr_adjustments": {
+          "_comment": "ATR multiplier overlays applied at trade entry based on Livermore 4H state.",
+          "main_stop_add": 0.3,
+          "secondary_stop_sub": 0.2,
+          "main_trail_mult": 1.3,
+          "secondary_trail_mult": 0.7,
+          "breakeven_atr_young_state": 1.8,
+          "breakeven_atr_mid_state": 1.5,
+          "breakeven_atr_old_state": 1.2,
+          "young_state_max_age": 5,
+          "old_state_min_age": 20
+        }
       }
     },
     "GBPAUD": {
@@ -518,7 +590,19 @@
         "early_scale_threshold": 0.012,
         "early_scale_bars": 4,
         "early_lock_atr_multiplier": 0.5,
-        "runner_trail_atr_multiplier": 2.0
+        "runner_trail_atr_multiplier": 2.0,
+        "livermore_atr_adjustments": {
+          "_comment": "ATR multiplier overlays applied at trade entry based on Livermore 4H state.",
+          "main_stop_add": 0.3,
+          "secondary_stop_sub": 0.2,
+          "main_trail_mult": 1.3,
+          "secondary_trail_mult": 0.7,
+          "breakeven_atr_young_state": 1.8,
+          "breakeven_atr_mid_state": 1.5,
+          "breakeven_atr_old_state": 1.2,
+          "young_state_max_age": 5,
+          "old_state_min_age": 20
+        }
       }
     }
   },
@@ -1176,5 +1260,13 @@
       "daily_summary": true,
       "market_status_changes": false
     }
+  },
+  "phase_config": {
+    "_note": "Controls which phases are active. Never flip manually without completing the gate criteria. shadow_only must remain true until Gate 1 passes.",
+    "current_phase": "1",
+    "shadow_only": true,
+    "autotrainer_enabled": false,
+    "structural_stops_enabled": false,
+    "per_tick_livermore_enabled": false
   }
 }

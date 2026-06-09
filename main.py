@@ -2286,6 +2286,17 @@ class TradingBot:
 
     def initialize_autotrainer(self):
         """Initializes and starts the continuous learning pipeline."""
+        # Phase gate: AutoTrainer must not calibrate thresholds until Gate 2 criteria
+        # are met (200+ validated shadow trades with win rate > 50%).
+        # During Phase 1 shadow we accumulate data silently — nothing is adjusted.
+        if not self.config.get("phase_config", {}).get("autotrainer_enabled", False):
+            logger.info(
+                "[PHASE GATE] AutoTrainer disabled by phase_config.autotrainer_enabled=false. "
+                "Shadow trades accumulate but no threshold calibration runs. "
+                "Enable after Gate 2 criteria confirmed."
+            )
+            self.autotrainer = None
+            return
         if self.config.get("ml", {}).get("enable_autotrain", False):
             logger.info("\n" + "=" * 70)
             logger.info("INITIALIZING AUTO-TRAINER")
@@ -4225,15 +4236,28 @@ class TradingBot:
                         f"[LIVERMORE BLOCK] {asset_name}: SHORT zeroed — "
                         f"NATURAL_RETRACEMENT is a pullback in uptrend, not a SHORT setup"
                     )
+                    # Record in shadow trader BEFORE zeroing — the shadow records
+                    # what would have happened if this signal had been allowed through.
+                    # This data is essential for Phase 3B learning on blocked setups.
+                    _original_signal = signal
                     signal = 0
                     details["reasoning"] = "livermore_counter_trend_block"
+                    self._shadow_open_blocked(
+                        asset_name, _original_signal, details, df, current_price,
+                        "livermore_counter_trend_block", asset_cfg,
+                    )
                 elif _lsm_post == "NATURAL_REBOUND" and signal > 0:
                     logger.info(
                         f"[LIVERMORE BLOCK] {asset_name}: LONG zeroed — "
                         f"NATURAL_REBOUND is a bounce in downtrend, not a LONG setup"
                     )
+                    _original_signal = signal
                     signal = 0
                     details["reasoning"] = "livermore_counter_trend_block"
+                    self._shadow_open_blocked(
+                        asset_name, _original_signal, details, df, current_price,
+                        "livermore_counter_trend_block", asset_cfg,
+                    )
                 elif _lsm_post == "NATURAL_REBOUND" and signal < 0:
                     # Shorting INTO a rebound sweeps the SL before price resumes down.
                     # Gold June 4 2026: shorted at $4,463 during NATURAL_REBOUND,
@@ -4244,8 +4268,13 @@ class TradingBot:
                         f"NATURAL_REBOUND is an active bounce; shorting INTO it risks SL sweep. "
                         f"Wait for exhaustion."
                     )
+                    _original_signal = signal
                     signal = 0
                     details["reasoning"] = "livermore_rebound_sl_sweep_block"
+                    self._shadow_open_blocked(
+                        asset_name, _original_signal, details, df, current_price,
+                        "livermore_rebound_sl_sweep_block", asset_cfg,
+                    )
                 elif _lsm_post == "NATURAL_RETRACEMENT" and signal > 0:
                     # Longing INTO a retracement risks SL sweep before trend resumes up.
                     logger.info(
@@ -4253,8 +4282,13 @@ class TradingBot:
                         f"NATURAL_RETRACEMENT is an active pullback; longing INTO it risks SL sweep. "
                         f"Wait for spring/exhaustion."
                     )
+                    _original_signal = signal
                     signal = 0
                     details["reasoning"] = "livermore_retracement_sl_sweep_block"
+                    self._shadow_open_blocked(
+                        asset_name, _original_signal, details, df, current_price,
+                        "livermore_retracement_sl_sweep_block", asset_cfg,
+                    )
 
             # ── MINIMUM REGIME CONFIDENCE GATE ────────────────────────────────
             # Block any signal when MTF regime confidence is below 60%.
@@ -5659,20 +5693,38 @@ class TradingBot:
                 except Exception:
                     pass
 
-            results = self.system_validator.watchdog_tick(
-                dynamic_thresholds=getattr(
-                    next(iter(self.aggregators.values()), None),
-                    'dynamic_thresholds', None
-                ) if self.aggregators else None,
-                open_positions=_open_positions,
-                binance_api_weight=_binance_weight,
-                binance_api_weight_limit=6000,
-            )
+            # Run watchdog per-asset so VTM CB gets the correct 1H data for each instrument.
+            # A single global call without df_1h means the 3×ATR shock detection
+            # silently skips every cycle — that's what was happening before this fix.
+            _first = True
+            for _wd_asset, _wd_agg in (self.aggregators or {}).items():
+                _wd_df1h = getattr(self, "_df_1h_cache", {}).get(_wd_asset)
+                _wd_cs   = (
+                    self._current_regime_data.get(_wd_asset, {}).get("composite_state")
+                    if hasattr(self, "_current_regime_data") else None
+                )
+                _wd_lsm = None
+                if _wd_cs is not None:
+                    _wd_lsm = getattr(_wd_cs, "livermore_state_1h", None)
+                    if hasattr(_wd_lsm, "value"):
+                        _wd_lsm = _wd_lsm.value
+                results = self.system_validator.watchdog_tick(
+                    dynamic_thresholds=(
+                        getattr(_wd_agg, "dynamic_thresholds", None) if _first else None
+                    ),
+                    open_positions=_open_positions,
+                    df_1h=_wd_df1h,
+                    asset=_wd_asset,
+                    livermore_state=_wd_lsm,
+                    binance_api_weight=_binance_weight if _first else None,
+                    binance_api_weight_limit=6000,
+                )
+                _first = False
 
-            # If API throttle signal fires, flag historical updater to skip next fetch
-            if results.get("api_throttle"):
-                if hasattr(self, 'historical_updater') and self.historical_updater:
-                    self.historical_updater._skip_next_fetch = True
+                # If API throttle signal fires, flag historical updater to skip next fetch
+                if results.get("api_throttle"):
+                    if hasattr(self, 'historical_updater') and self.historical_updater:
+                        self.historical_updater._skip_next_fetch = True
 
         except Exception as _wdog_err:
             logger.debug("[VALIDATOR] watchdog_tick error: %s", _wdog_err)
@@ -6117,6 +6169,17 @@ class TradingBot:
                 self.portfolio_manager.save_portfolio_state()
         except Exception as e:
             logger.error(f"Error saving portfolio state on exit: {e}")
+
+        # Persist DynamicThresholds rolling history so adaptive behaviour
+        # resumes immediately on next start rather than rebuilding from scratch.
+        try:
+            for _dt_asset, _dt_agg in (self.aggregators or {}).items():
+                _dt = getattr(_dt_agg, "dynamic_thresholds", None)
+                if _dt and hasattr(_dt, "save_cache"):
+                    _dt.save_cache()
+                    logger.info("[STOP] DynamicThresholds cache saved for %s", _dt_asset)
+        except Exception as _dt_err:
+            logger.warning("[STOP] DynamicThresholds save error: %s", _dt_err)
 
         # Stop the autotrainer
         if self.autotrainer:

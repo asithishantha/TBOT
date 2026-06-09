@@ -140,6 +140,11 @@ class SystemValidator:
         # VTM circuit breaker signals: {asset: True/False}
         self._vtm_cb_signals: Dict[str, bool] = {}
 
+        # Vol-down-ratio veto threshold — synced from aggregator_presets so the
+        # calibration check evaluates the same threshold MR Mode 1 actually uses.
+        self._vdr_threshold: float = 1.2  # safe default; overridden below
+        self._load_vdr_threshold()
+
         # Summary log state
         self._last_summary_time: Optional[datetime] = None
         self._cycle_count: int = 0
@@ -147,6 +152,28 @@ class SystemValidator:
         # Startup log
         logger.info("[VALIDATOR] System Validator initialised (path=%s)", state_path)
         self._load_state()
+
+    def _load_vdr_threshold(self) -> None:
+        """
+        Read the vol_down_ratio veto threshold from aggregator_presets.json.
+        MR Mode 1 reads from MR_THREE_MODE.mode1.vol_down_ratio_veto.
+        The validator must check the same value — if the threshold is tuned
+        during paper trading, both must move together.
+        Falls back to 1.2 if the file is unreachable.
+        """
+        try:
+            import json as _json
+            with open("config/aggregator_presets.json") as _f:
+                _d = _json.load(_f)
+            self._vdr_threshold = (
+                _d.get("MR_THREE_MODE", {})
+                  .get("mode1", {})
+                  .get("vol_down_ratio_veto", 1.2)
+            )
+            logger.debug("[VALIDATOR] vol_down_ratio threshold loaded: %.2f", self._vdr_threshold)
+        except Exception as _e:
+            logger.debug("[VALIDATOR] Could not load vdr threshold, using 1.2: %s", _e)
+            self._vdr_threshold = 1.2
 
     # ─────────────────────────────────────────────────────────────────────────
     # Public API
@@ -359,7 +386,15 @@ class SystemValidator:
             # Some components legitimately have low diversity in trending markets
             # (e.g. is_silent_zone will be False for long stretches of MAIN_UP).
             # Cap minimum at 10 so they don't appear DEAD when they're just stable.
-            liveness = max(10.0, min(100.0, raw_score * 3.0 + 10.0))
+            # unique == 1 means the component produced a single identical value
+            # for all observations in its buffer — genuinely stuck/frozen/unconnected.
+            # Formula: ×3.0 amplifies sensitivity (33% diversity → 43, 67% → 100).
+            # +10.0 floors legitimate low-diversity components (e.g. is_silent_zone
+            # is False for long MAIN_UP stretches — stable, not dead).
+            if unique == 1:
+                liveness = 0.0  # DEAD: all buffer values identical
+            else:
+                liveness = max(10.0, min(100.0, raw_score * 3.0 + 10.0))
 
             ch = self._get_or_create(name)
             ch.liveness = round(liveness, 1)
@@ -411,7 +446,7 @@ class SystemValidator:
             if _vdr_name not in self._calibration_counts:
                 self._calibration_counts[_vdr_name] = {"above_threshold": 0, "total": 0}
             self._calibration_counts[_vdr_name]["total"] += 1
-            if composite_state.vol_down_ratio > 1.2:
+            if composite_state.vol_down_ratio > self._vdr_threshold:
                 self._calibration_counts[_vdr_name]["above_threshold"] += 1
 
             counts = self._calibration_counts[_vdr_name]

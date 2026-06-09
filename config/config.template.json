@@ -1686,5 +1686,13 @@
       "daily_summary": true,
       "market_status_changes": false
     }
+  },
+  "phase_config": {
+    "_note": "Controls which phases are active. Never flip manually without completing the gate criteria. shadow_only must remain true until Gate 1 passes.",
+    "current_phase": "1",
+    "shadow_only": true,
+    "autotrainer_enabled": false,
+    "structural_stops_enabled": false,
+    "per_tick_livermore_enabled": false
   }
 }

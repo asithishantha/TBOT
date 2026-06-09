@@ -744,8 +744,11 @@ class PortfolioManager:
                                 # Create NEW trade manager if it was missing
                                 logger.info(f"[STATE] VTM missing for {position_id}. Creating new manager...")
                                 risk_config = getattr(position, 'risk_config', asset_config.get('risk', {}))
+                                # Inject phase_config so VTM gates are controllable
+                                risk_config = dict(risk_config)
+                                risk_config["phase_config"] = self.config.get("phase_config", {})
                                 signal_details = getattr(position, 'signal_details', {})
-                                
+
                                 position.trade_manager = VeteranTradeManager(
                                     entry_price=position.entry_price,
                                     side=position.side,
@@ -2231,7 +2234,11 @@ class PortfolioManager:
         # ✅ VTM is initialized INSIDE Position.__init__() - don't do it here!
         # ============================================================================
         risk_config = self.config.get("assets", {}).get(asset, {}).get("risk", {})
-        
+        # Inject top-level phase_config so VTM gates (per_tick_livermore_enabled,
+        # structural_stops_enabled) can read it from self.risk_config.
+        risk_config = dict(risk_config)
+        risk_config["phase_config"] = self.config.get("phase_config", {})
+
         position = Position(
             asset=asset,
             symbol=symbol,

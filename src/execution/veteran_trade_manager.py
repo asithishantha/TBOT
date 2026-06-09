@@ -905,7 +905,12 @@ class VeteranTradeManager:
             # ── PHASE 4: Live Livermore State Refresh ──────────────────────────
             # Refresh 4H Livermore state every cycle so VTM responds to structural
             # transitions that occur AFTER trade entry, not just at entry time.
-            if composite_state is not None:
+            # Gated by phase_config.per_tick_livermore_enabled.
+            # Only activate after Gate 3B criteria confirmed (21-day live observation
+            # with structural stops enabled, no increase in premature stop-outs).
+            _phase_cfg = self.risk_config.get("phase_config", {})
+            _per_tick_enabled = _phase_cfg.get("per_tick_livermore_enabled", False)
+            if composite_state is not None and _per_tick_enabled:
                 _new_lv4h = getattr(composite_state, "livermore_state_4h", None)
                 _new_age   = int(getattr(composite_state, "livermore_state_age_4h", 0) or 0)
                 if _new_lv4h and _new_lv4h != self.livermore_state_4h:
@@ -1984,6 +1989,10 @@ class VeteranTradeManager:
                              between stop and entry; don't place stop inside the level).
           REJECT / None    — Return None → caller keeps ATR baseline.
         """
+        _phase_cfg = self.risk_config.get("phase_config", {})
+        if not _phase_cfg.get("structural_stops_enabled", False):
+            return None
+
         entry_type = getattr(self, "vtm_entry_type", None)
         side       = self.side          # "long" or "short"
         entry      = self.entry_price

@@ -5,6 +5,9 @@ Every threshold adapts to the asset's own recent behaviour.
 """
 import numpy as np
 import logging
+import json
+import os
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -20,10 +23,60 @@ class DynamicThresholds:
         )
     """
 
-    def __init__(self, lookback: int = 100, min_samples: int = 20):
+    def __init__(self, lookback: int = 100, min_samples: int = 20,
+                 cache_path: str = "data/dynamic_thresholds_cache.json"):
         self._cache = {}  # {(asset, metric): [values]}
         self.lookback = lookback
         self.min_samples = min_samples
+        self._cache_path = cache_path
+        self._load_cache()
+
+    def _load_cache(self) -> None:
+        """
+        Reload rolling history from disk on startup.
+        Keys are serialised as "asset||metric" strings since JSON
+        doesn't support tuple keys. Silently starts fresh if file
+        is missing or corrupt — never raises.
+        """
+        try:
+            if os.path.exists(self._cache_path):
+                with open(self._cache_path, "r") as f:
+                    raw = json.load(f)
+                self._cache = {
+                    tuple(k.split("||", 1)): v
+                    for k, v in raw.items()
+                    if "||" in k
+                }
+                logger.debug(
+                    "[DT] Loaded %d metric histories from %s",
+                    len(self._cache), self._cache_path,
+                )
+        except Exception as e:
+            logger.warning("[DT] Could not load threshold cache: %s — starting fresh", e)
+            self._cache = {}
+
+    def save_cache(self) -> None:
+        """
+        Persist rolling history to disk using atomic write.
+        Call from bot shutdown so the next session resumes from where
+        this one left off instead of rebuilding from scratch.
+        """
+        try:
+            Path(self._cache_path).parent.mkdir(parents=True, exist_ok=True)
+            serialisable = {
+                f"{k[0]}||{k[1]}": v
+                for k, v in self._cache.items()
+            }
+            tmp = Path(self._cache_path).with_suffix(".tmp")
+            with open(tmp, "w") as f:
+                json.dump(serialisable, f)
+            os.replace(tmp, self._cache_path)
+            logger.debug(
+                "[DT] Saved %d metric histories to %s",
+                len(self._cache), self._cache_path,
+            )
+        except Exception as e:
+            logger.warning("[DT] Could not save threshold cache: %s", e)
 
     def check(self, asset: str, metric: str, value: float,
               z_threshold: float = 2.0, fallback: float = None) -> tuple:
