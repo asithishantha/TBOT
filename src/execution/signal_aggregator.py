@@ -3093,6 +3093,24 @@ Adds Governor + Volatility + Sniper checks to existing aggregator
                             "[HARD_VETO] %s Block C: %s → MR zeroed",
                             self.asset_type, _c_blocked,
                         )
+
+                # Block D: TF and EMA shorts during NATURAL_RETRACEMENT
+                # NATURAL_RETRACEMENT = pullback inside an uptrend.
+                # Shorting INTO a retracement risks SL sweep before trend resumes.
+                # MR shorts are caught by Block C; Block D closes the gap for TF+EMA.
+                if _hv_1h == "NATURAL_RETRACEMENT":
+                    _d_blocked = []
+                    if tf_signal < 0:
+                        tf_signal = 0; tf_conf = 0.0
+                        _d_blocked.append("TF_SHORT")
+                    if ema_signal < 0:
+                        ema_signal = 0; ema_conf = 0.0
+                        _d_blocked.append("EMA_SHORT")
+                    if _d_blocked:
+                        logger.info(
+                            "[HARD_VETO] %s Block D: NATURAL_RETRACEMENT+SHORT → zeroed %s",
+                            self.asset_type, "+".join(_d_blocked),
+                        )
             # ─────────────────────────────────────────────────────────────
 
             # ═══════════════════════════════════════════════════════════════
