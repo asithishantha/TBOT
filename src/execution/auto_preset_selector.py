@@ -149,11 +149,17 @@ class DynamicPresetSelector:
             volatility_ratio = metrics['volatility_ratio']
             volume_trend = metrics.get('volume_trend', 0)
             
+            # If ADX is rising meaningfully (> 2 pts over 4 bars), a new trend is
+            # establishing — skip the chop override regardless of the raw ADX level.
+            adx_slope_4bar = adx_current - adx_prev3
+            adx_is_rising = adx_slope_4bar > 2.0
+
             if (
                 adx_current < 20 and
                 adx_prev1 < 20 and
                 adx_prev2 < 20 and
                 adx_prev3 < 20 and
+                not adx_is_rising and
                 0.45 <= volatility_ratio <= 1.0 and
                 volume_trend <= 5.0
             ):
@@ -315,12 +321,22 @@ class DynamicPresetSelector:
             # ================================================================
             # 🛡️ REGIME ALIGNMENT VETO
             # Reason: Ensure strategy matches the dominant market regime (Physics check).
+            # Rising ADX exception: when ADX is sub-20 but climbing, a new trend is
+            # establishing — treat as NEUTRAL so the score-based selection proceeds.
+            # A rising ADX that breaks 20 while we're in MR is exactly the signal we
+            # want to ride, not block.
             # ================================================================
             adx = metrics['adx']
+            # Reuse slope already computed above (adx_slope_4bar / adx_is_rising).
+            # adx_is_rising = True when ADX rose > 2 pts over the last 4 bars.
             market_regime_type = "NEUTRAL"
-            if adx > 25: market_regime_type = "TREND"
-            elif adx < 20: market_regime_type = "RANGE"
-            
+            if adx > 25:
+                market_regime_type = "TREND"
+            elif adx < 20 and not adx_is_rising:
+                # Only classify as RANGE when ADX is flat or falling below 20.
+                # A rising ADX (trend establishing) stays NEUTRAL — no veto fires.
+                market_regime_type = "RANGE"
+
             # A. Trend Veto: No MR in a trending market — redirect to conservative
             if market_regime_type == "TREND" and new_preset == "mr":
                 logger.warning(
@@ -329,11 +345,11 @@ class DynamicPresetSelector:
                 )
                 return "conservative"
 
-            # B. Range Veto: No high-conviction trend presets in ranging market — redirect to MR
+            # B. Range Veto: No high-conviction trend presets in flat/falling range — redirect to MR
             if market_regime_type == "RANGE" and new_preset in ["balanced", "aggressive"]:
                 logger.warning(
                     f"[SELECTOR] 🛡️ ALIGNMENT VETO: {new_preset} blocked in RANGE "
-                    f"(ADX: {adx:.1f}) — redirecting to mr"
+                    f"(ADX: {adx:.1f}, slope={adx_slope_4bar:+.1f}) — redirecting to mr"
                 )
                 return "mr"
             
